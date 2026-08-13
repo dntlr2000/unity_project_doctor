@@ -1,8 +1,28 @@
 # Changelog
 
-이 프로젝트의 주요 변경 사항을 기록한다. 버전은 Semantic Versioning 형식으로 관리한다.
+이 모노레포와 각 Unity Skill의 주요 변경 사항을 기록한다. Skill 버전은 각 Skill 디렉터리의 VERSION 및 script metadata로 확인한다.
 
-## 0.2.0 - 2026-08-14
+## Unreleased
+
+### Added
+
+- 명시적 호출 전용 `unity-baseline-verification` v0.1.0 Skill metadata
+- `unity-project-doctor` v0.2 JSON의 엄격한 preflight validation
+- Unity 6000.0.69f1 executable, project 및 Editor.log 버전 검사
+- reparse point와 외부 file package dependency를 거부하는 안전한 격리 프로젝트 복사
+- test나 build 없이 수행하는 batchmode import 및 script-compilation 검증
+- process exit code와 Editor.log evidence classification
+- 원본 프로젝트의 실행 전후 전체 파일 목록과 SHA-256 integrity 비교
+- idempotent 공용 Skill installer, fake-Unity regression tests 및 별도 Windows CI
+- Doctor와 Baseline의 독립적인 Skill VERSION 파일
+
+### Changed
+
+- 저장소 이름과 로컬 기준 경로를 `unity_agent_pipeline`으로 정리
+- 공용 installer가 모노레포의 모든 `skills/codex` 하위 Skill을 설치하도록 문서화
+- Baseline 문서와 테스트를 component별 경로로 통합
+
+## unity-project-doctor 0.2.0 - 2026-08-14
 
 ### Added
 
@@ -32,7 +52,7 @@
 - worktree junction 또는 symbolic link를 발견하면 Git status를 실행하지 않음
 - inherited GIT environment override와 project-local Git executable을 거부
 
-## 0.1.0 - 2026-08-13
+## unity-project-doctor 0.1.0 - 2026-08-13
 
 ### Added
 

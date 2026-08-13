@@ -485,6 +485,8 @@ Assert-Equal -Expected "https://json-schema.org/draft/2020-12/schema" -Actual (G
 Assert-Equal -Expected "1.0.0" -Actual $auditSchema.properties.schemaVersion.const -Message "Frozen JSON Schema contract version"
 $version = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()
 Assert-Equal -Expected "0.2.0" -Actual $version -Message "Repository VERSION"
+$doctorVersion = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\VERSION")).Trim()
+Assert-Equal -Expected "0.2.0" -Actual $doctorVersion -Message "Doctor Skill VERSION"
 $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\SKILL.md")
 Assert-True -Condition ($skillContent -match "^---\r?\nname: unity-project-doctor\r?\ndescription:") -Message "Skill frontmatter and name"
 Assert-True -Condition ($skillContent -match "schemaVersion to be exactly 1\.0\.0") -Message "Skill must pin the frozen audit contract"
@@ -692,13 +694,17 @@ try {
 $linkBefore = Get-Item -LiteralPath $idempotencyLink -Force
 $targetBefore = Get-NormalizedLinkTarget -Link $linkBefore
 $creationTimeBefore = $linkBefore.CreationTimeUtc
-Invoke-Installer -DestinationRoot $idempotencyDestination
+if ($usedExistingGlobalLink) {
+    Invoke-Installer -DestinationRoot $idempotencyDestination -WhatIf
+} else {
+    Invoke-Installer -DestinationRoot $idempotencyDestination
+}
 $linkAfter = Get-Item -LiteralPath $idempotencyLink -Force
 Assert-Equal -Expected "SymbolicLink" -Actual $linkAfter.LinkType -Message "Installer link type"
 Assert-Equal -Expected $targetBefore -Actual (Get-NormalizedLinkTarget -Link $linkAfter) -Message "Installer link target after repeated run"
 Assert-Equal -Expected $creationTimeBefore -Actual $linkAfter.CreationTimeUtc -Message "Installer must preserve an existing matching link"
 if ($usedExistingGlobalLink) {
-    Write-Host "Idempotency test reused the already installed global link because this process cannot create symbolic links."
+    Write-Host "Idempotency test reused the installed Doctor link with WhatIf because this process cannot create all monorepo Skill links."
 }
 
 $conflictDestination = Join-Path $script:ScratchRoot "installer-conflict"

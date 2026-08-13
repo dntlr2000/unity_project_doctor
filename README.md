@@ -1,10 +1,20 @@
-# Unity Project Doctor
+# Unity Agent Pipeline
 
-[![Static fixture tests](https://github.com/dntlr2000/unity_project_doctor/actions/workflows/static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_project_doctor/actions/workflows/static-tests.yml)
+[![Doctor static fixture tests](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/static-tests.yml)
+[![Baseline fake-Unity tests](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/baseline-static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/baseline-static-tests.yml)
 
-Unity Project Doctor는 Codex에서 명시적으로 호출하는 Unity 프로젝트 읽기 전용 정적 감사 Skill이다. 현재 버전은 0.2.0이며, bundled PowerShell scanner가 현재 작업 디렉터리를 반복 가능한 JSON으로 검사한다.
+Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시적 호출 전용 Codex Skill 모음이다. Skill 원본, 공용 설치기, 계약, 테스트 및 CI는 이 모노레포에 유지한다.
 
-이 도구는 Unity 프로젝트의 정적 상태만 관찰한다. Unity Editor, Unity Hub, batchmode, compiler, test runner, player build 또는 runtime을 실행하지 않는다.
+| Skill | 버전 | 역할 |
+| --- | --- | --- |
+| `$unity-project-doctor` | 0.2.0 | Unity를 실행하지 않는 완전한 읽기 전용 결정론적 정적 감사 |
+| `$unity-baseline-verification` | 0.1.0 | Doctor JSON을 검증한 뒤 격리 복사본에서만 Unity 6000.0.69f1 스크립트 컴파일 근거 수집 |
+
+두 Skill 모두 `allow_implicit_invocation=false`이며 이름을 명시하지 않은 요청에서는 실행되지 않는다. Baseline의 동적 안전 계약과 사용법은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)에 분리되어 있다.
+
+## Unity Project Doctor v0.2.0
+
+Unity Project Doctor는 현재 작업 디렉터리를 반복 가능한 JSON으로 검사한다. Unity Editor, Unity Hub, batchmode, compiler, test runner, player build 또는 runtime을 실행하지 않는다.
 
 ## 주요 기능
 
@@ -32,32 +42,40 @@ Unity 설치와 외부 PowerShell module은 필요하지 않다. 이 저장소�
 ## 저장소 구조
 
 ~~~text
-unity_project_doctor/
-├── .github/workflows/static-tests.yml
+unity_agent_pipeline/
+├── .github/workflows/
+│   ├── static-tests.yml
+│   └── baseline-static-tests.yml
 ├── CHANGELOG.md
 ├── README.md
 ├── VERSION
 ├── docs/
+│   ├── skills/unity-baseline-verification.md
 │   └── validation/v0.2.0-real-project-acceptance.md
 ├── schemas/
 │   └── unity-project-audit.schema.json
 ├── scripts/
 │   └── install-codex-skills.ps1
-├── skills/codex/unity-project-doctor/
-│   ├── SKILL.md
-│   ├── agents/openai.yaml
-│   └── scripts/inspect-unity-project.ps1
+├── skills/codex/
+│   ├── unity-project-doctor/
+│   │   ├── VERSION
+│   │   ├── SKILL.md
+│   │   ├── agents/openai.yaml
+│   │   └── scripts/inspect-unity-project.ps1
+│   └── unity-baseline-verification/
+│       ├── VERSION
+│       ├── SKILL.md
+│       ├── agents/openai.yaml
+│       └── scripts/verify-unity-baseline.ps1
 └── tests/
-    ├── fixtures/
-    │   ├── not-unity/
-    │   ├── unity-minimal-clean/
-    │   ├── unity-with-warnings/
-    │   ├── malformed-manifest/
-    │   └── missing-build-scene/
-    └── run-tests.ps1
+    ├── fixtures/...
+    ├── run-tests.ps1
+    └── unity-baseline-verification/run-tests.ps1
 ~~~
 
-Skill 원본은 이 Git 저장소에 남는다. 설치기는 원본 디렉터리를 사용자 홈의 .agents/skills/unity-project-doctor에 symbolic link로 연결한다.
+Skill 원본은 이 Git 저장소에 남는다. 설치기는 `skills/codex` 아래의 모든 Skill을 사용자 홈 `.agents/skills`에 이름별 symbolic link로 연결한다.
+
+루트 `VERSION`은 마지막으로 게시된 저장소 Release 기준선을 나타낸다. 각 Skill의 실제 component 버전은 해당 Skill 디렉터리의 `VERSION`을 사용한다.
 
 ## 안전 계약
 
@@ -83,7 +101,7 @@ scanner는 다음 계약을 지킨다.
 PowerShell에서 저장소 루트로 이동한 뒤 먼저 설치 계획을 확인한다.
 
 ~~~powershell
-cd E:\Playground\Pipelines\unity_project_doctor
+cd E:\Playground\Pipelines\unity_agent_pipeline
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-codex-skills.ps1 -WhatIf
 ~~~
 
@@ -98,10 +116,11 @@ Windows에서 symbolic link 생성에는 개발자 모드 또는 관리자 권�
 설치 결과를 확인한다.
 
 ~~~powershell
-$link = Get-Item "$HOME\.agents\skills\unity-project-doctor" -Force
-$link | Select-Object FullName, LinkType, Target
-Test-Path "$HOME\.agents\skills\unity-project-doctor\SKILL.md"
+$doctorLink = Get-Item "$HOME\.agents\skills\unity-project-doctor" -Force
+$baselineLink = Get-Item "$HOME\.agents\skills\unity-baseline-verification" -Force
+$doctorLink, $baselineLink | Select-Object FullName, LinkType, Target
 Test-Path "$HOME\.agents\skills\unity-project-doctor\scripts\inspect-unity-project.ps1"
+Test-Path "$HOME\.agents\skills\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
 ~~~
 
 설치기는 기존 경로를 삭제하거나 덮어쓰지 않는다.
@@ -115,7 +134,7 @@ Test-Path "$HOME\.agents\skills\unity-project-doctor\scripts\inspect-unity-proje
 원본 저장소를 정상적인 Git 절차로 업데이트한다.
 
 ~~~powershell
-cd E:\Playground\Pipelines\unity_project_doctor
+cd E:\Playground\Pipelines\unity_agent_pipeline
 git pull --ff-only
 ~~~
 
@@ -144,7 +163,7 @@ Skill은 bundled scanner가 실행 가능하면 이를 우선한다. scanner JSO
 ProjectRoot 기본값은 현재 작업 디렉터리다.
 
 ~~~powershell
-$scanner = "E:\Playground\Pipelines\unity_project_doctor\skills\codex\unity-project-doctor\scripts\inspect-unity-project.ps1"
+$scanner = "E:\Playground\Pipelines\unity_agent_pipeline\skills\codex\unity-project-doctor\scripts\inspect-unity-project.ps1"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scanner
 ~~~
 
@@ -218,13 +237,19 @@ Compilation, tests, build 및 runtime의 의도된 NOT_VERIFIED는 그 자체로
 
 ## 자동 테스트
 
-저장소 루트에서 다음 명령을 실행한다.
+Doctor fixture 및 계약 테스트:
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 ~~~
 
-테스트는 외부 framework 없이 기본 PowerShell 기능만 사용한다.
+Baseline fake-Unity 및 격리 안전성 테스트:
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1
+~~~
+
+두 테스트 모두 외부 테스트 framework나 Unity 설치 없이 Windows PowerShell 기본 기능만 사용한다.
 
 - NOT_A_UNITY_PROJECT
 - ProjectRoot 생략 시 current working directory 기본값
@@ -266,7 +291,7 @@ Get-ChildItem -Filter *.ps1 -File -Recurse | ForEach-Object {
 }
 ~~~
 
-GitHub Actions의 static-tests workflow는 windows-latest에서 같은 fixture test만 실행한다. Unity와 외부 package를 설치하지 않는다.
+GitHub Actions의 `static-tests.yml`은 Doctor fixture를, `baseline-static-tests.yml`은 fake Unity executable을 이용한 Baseline 회귀 테스트를 `windows-latest`에서 실행한다. 두 workflow 모두 Unity와 외부 package를 설치하지 않는다.
 
 ## 수동 검증
 
@@ -304,14 +329,14 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 - fixture regression test 및 Windows CI
 - scanner가 불가능할 때만 남겨 둔 v0.1 manual fallback
 
-## 의도적으로 미구현한 범위
+## Doctor에서 의도적으로 미구현한 범위
 
 - Unity Editor 또는 batchmode
 - compilation
 - EditMode 또는 PlayMode test 실행
 - Player Build
 - runtime 또는 gameplay 검증
-- unity-baseline-verification
+- Unity 실행 기반 검증. 이 책임은 별도 `$unity-baseline-verification` Skill에만 있음
 - MCP
 - UPM package
 - 자동 수정 또는 cleanup
@@ -321,17 +346,13 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 - 결과 database
 - 프로젝트 내부 설정 설치
 
-## unity-baseline-verification 진입 조건
+## Baseline과의 책임 경계
 
-다음 단계는 v0.2 scanner JSON schema와 안전 계약이 실제 여러 Unity 프로젝트에서 안정화된 뒤 시작한다.
+`$unity-baseline-verification`은 Doctor에 동적 기능을 추가하지 않는다. 별도 명시적 호출, 별도 Skill 정책 및 별도 종료 상태를 유지하며, Doctor `schemaVersion: 1.0.0` JSON을 입력 계약으로 소비한다.
 
-- fixture CI가 지속적으로 통과
-- 서로 다른 Unity version과 package 구성을 가진 실제 프로젝트에서 수동 read-only 검증 완료
-- warning code와 blocked check 의미가 충분히 안정화
-- schemaVersion 1.0.0 consumer contract 합의
-- compile, test, build를 실행할 별도 명시적 권한과 격리된 output 위치 설계
-- static audit와 dynamic baseline verification의 종료 상태 및 책임 경계 정의
+- Doctor는 원본 Unity 프로젝트를 완전한 읽기 전용으로 정적 감사한다.
+- Baseline은 원본을 해시로 보호하고 외부 임시 위치에 만든 격리 복사본에만 지정된 Unity.exe를 실행한다.
+- Baseline v0.1은 script compilation 근거만 다루며 tests, Player Build, PlayMode 및 runtime은 `NOT_VERIFIED`로 유지한다.
+- 어느 Skill도 다른 Skill을 암묵적으로 호출하지 않는다.
 
-이 조건을 만족하기 전에는 unity-baseline-verification 기능을 이 Skill에 추가하지 않는다.
-
-v0.2.0 Release에서 fixture CI, 세 실제 프로젝트의 read-only 승인, warning·blocked 의미 검토 및 schemaVersion 1.0.0 계약 고정까지 완료했다. 다음 단계로 들어가기 전에는 동적 실행을 위한 별도 명시 권한, 프로젝트 밖 결과 위치, 실행 전후 변경 감지, 정적 Doctor와 동적 검증의 종료 상태 경계를 별도 설계해야 한다.
+자세한 전제조건, 실행 명령, 결과 상태 및 안전 계약은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)를 따른다.

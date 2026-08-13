@@ -1,0 +1,7 @@
+interface:
+  display_name: "Unity Baseline Verification"
+  short_description: "Verify an isolated Unity compilation baseline"
+  default_prompt: "Use $unity-baseline-verification with an existing unity-project-doctor v0.2 JSON file to verify the current Unity project's isolated compilation baseline."
+
+policy:
+  allow_implicit_invocation: false
