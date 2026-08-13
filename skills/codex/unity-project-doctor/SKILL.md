@@ -38,6 +38,8 @@ Apply ExecutionPolicy Bypass only to that child process. Do not change machine o
 Treat the scanner's valid JSON stdout as the source of truth:
 
 - Require one JSON document and no human-readable stdout prefix or suffix.
+- For this v0.2 Skill, require schemaVersion to be exactly 1.0.0 before interpreting fields.
+- If schemaVersion is absent or unknown, preserve the raw value, do not guess the contract, and report AUDIT_BLOCKED for the Skill-level report.
 - Keep schemaVersion, scannerVersion, evidence, warnings, blocked checks, verification states, and finalStatus unchanged.
 - Do not delete findings, reinterpret a warning as success, or promote the scanner's final status.
 - Do not infer compilation, test, build, or runtime success from any static field.

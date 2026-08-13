@@ -2,7 +2,7 @@
 
 이 프로젝트의 주요 변경 사항을 기록한다. 버전은 Semantic Versioning 형식으로 관리한다.
 
-## 0.2.0 - 2026-08-13
+## 0.2.0 - 2026-08-14
 
 ### Added
 
@@ -13,6 +13,9 @@
 - fixture 5종과 외부 프레임워크 없는 PowerShell 테스트 실행기
 - Windows GitHub Actions 정적 테스트
 - VERSION 파일과 확장된 사용 문서
+- JSON Schema Draft 2020-12 기반 `schemaVersion: 1.0.0` 기계 판독 계약
+- Schema의 필수 필드, 타입, enum, const 및 추가 필드 금지를 검사하는 외부 모듈 없는 회귀 테스트
+- 서로 다른 실제 Unity 프로젝트 세 개의 읽기 전용 승인 기록
 
 ### Changed
 

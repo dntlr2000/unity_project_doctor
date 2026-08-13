@@ -1,5 +1,7 @@
 # Unity Project Doctor
 
+[![Static fixture tests](https://github.com/dntlr2000/unity_project_doctor/actions/workflows/static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_project_doctor/actions/workflows/static-tests.yml)
+
 Unity Project Doctor는 Codex에서 명시적으로 호출하는 Unity 프로젝트 읽기 전용 정적 감사 Skill이다. 현재 버전은 0.2.0이며, bundled PowerShell scanner가 현재 작업 디렉터리를 반복 가능한 JSON으로 검사한다.
 
 이 도구는 Unity 프로젝트의 정적 상태만 관찰한다. Unity Editor, Unity Hub, batchmode, compiler, test runner, player build 또는 runtime을 실행하지 않는다.
@@ -35,6 +37,10 @@ unity_project_doctor/
 ├── CHANGELOG.md
 ├── README.md
 ├── VERSION
+├── docs/
+│   └── validation/v0.2.0-real-project-acceptance.md
+├── schemas/
+│   └── unity-project-audit.schema.json
 ├── scripts/
 │   └── install-codex-skills.ps1
 ├── skills/codex/unity-project-doctor/
@@ -166,7 +172,9 @@ $audit.finalStatus
 
 ## JSON schema 개요
 
-schemaVersion 1.0.0의 최상위 필드는 다음과 같다.
+schemaVersion 1.0.0의 기계 판독 가능한 계약은 [unity-project-audit.schema.json](schemas/unity-project-audit.schema.json)에 고정되어 있다. 이 파일은 JSON Schema Draft 2020-12를 사용하며, `v0.2.0` 태그의 raw URL을 `$id`로 갖는다.
+
+최상위 필드는 다음과 같다.
 
 | 필드 | 내용 |
 | --- | --- |
@@ -189,6 +197,15 @@ schemaVersion 1.0.0의 최상위 필드는 다음과 같다.
 | evidence | 순서가 고정된 관찰 및 판단 근거 |
 
 compact 출력은 동일한 입력 filesystem과 Git metadata에서 byte-for-byte 결정성을 목표로 한다. Pretty는 같은 의미를 유지하면서 whitespace만 바꾼다.
+
+### 호환성 규칙
+
+- `schemaVersion`은 consumer가 의존하는 JSON 형상과 상태 의미의 호환성 버전이다.
+- 필수 필드의 제거·이름 변경·타입 변경, enum 값의 제거 또는 기존 상태 의미 변경은 `schemaVersion`을 올려야 한다.
+- `scannerVersion`은 scanner 구현 버전이다. JSON 계약을 유지하는 버그 수정은 `scannerVersion`만 올릴 수 있다.
+- v1 계약의 object는 Schema에 선언되지 않은 추가 필드를 허용하지 않는다. 새 필드가 필요하면 consumer 호환성을 검토하고 계약 버전을 결정한다.
+- consumer는 알 수 없는 `schemaVersion`을 임의 해석하거나 `finalStatus`, warning, blocked check를 더 성공적인 상태로 승격해서는 안 된다.
+- `compilation`, `tests`, `build`, `runtime`은 v1 계약에서 항상 `NOT_VERIFIED`다.
 
 ## 종료 상태
 
@@ -217,7 +234,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 - missing Build Settings Scene
 - compact JSON determinism
 - Unicode project path round-trip
-- 필수 schema field
+- Draft 2020-12 Schema parse와 고정된 `schemaVersion`
+- 모든 주요 scanner 결과의 필수 필드, 타입, enum, const, 배열 항목 및 추가 필드 금지 검증
 - 모든 dynamic verification의 NOT_VERIFIED
 - 실행 전후 fixture clone의 file list와 SHA-256 불변
 - source fixture의 file list와 SHA-256 불변
@@ -251,6 +269,8 @@ Get-ChildItem -Filter *.ps1 -File -Recurse | ForEach-Object {
 GitHub Actions의 static-tests workflow는 windows-latest에서 같은 fixture test만 실행한다. Unity와 외부 package를 설치하지 않는다.
 
 ## 수동 검증
+
+실제 프로젝트 승인 결과는 [v0.2.0 실제 프로젝트 승인 기록](docs/validation/v0.2.0-real-project-acceptance.md)에 정리되어 있다.
 
 ### 비 Unity 폴더
 
@@ -313,3 +333,5 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 - static audit와 dynamic baseline verification의 종료 상태 및 책임 경계 정의
 
 이 조건을 만족하기 전에는 unity-baseline-verification 기능을 이 Skill에 추가하지 않는다.
+
+v0.2.0 Release에서 fixture CI, 세 실제 프로젝트의 read-only 승인, warning·blocked 의미 검토 및 schemaVersion 1.0.0 계약 고정까지 완료했다. 다음 단계로 들어가기 전에는 동적 실행을 위한 별도 명시 권한, 프로젝트 밖 결과 위치, 실행 전후 변경 감지, 정적 Doctor와 동적 검증의 종료 상태 경계를 별도 설계해야 한다.

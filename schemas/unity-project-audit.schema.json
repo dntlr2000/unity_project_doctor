@@ -1,0 +1,869 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/dntlr2000/unity_project_doctor/v0.2.0/schemas/unity-project-audit.schema.json",
+  "title": "Unity Project Doctor static audit",
+  "description": "The frozen schemaVersion 1.0.0 output contract for Unity Project Doctor's read-only deterministic static scanner.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "scannerVersion",
+    "projectRoot",
+    "projectDetection",
+    "unityEditorVersion",
+    "git",
+    "packages",
+    "assemblies",
+    "buildSettings",
+    "agentsFiles",
+    "projectSkills",
+    "trackedGeneratedFolderPaths",
+    "warnings",
+    "blockedChecks",
+    "dynamicVerification",
+    "finalStatus",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0",
+      "description": "The audit JSON compatibility contract version."
+    },
+    "scannerVersion": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1
+    },
+    "projectDetection": {
+      "$ref": "#/$defs/projectDetection"
+    },
+    "unityEditorVersion": {
+      "$ref": "#/$defs/unityEditorVersion"
+    },
+    "git": {
+      "$ref": "#/$defs/git"
+    },
+    "packages": {
+      "$ref": "#/$defs/packages"
+    },
+    "assemblies": {
+      "$ref": "#/$defs/assemblies"
+    },
+    "buildSettings": {
+      "$ref": "#/$defs/buildSettings"
+    },
+    "agentsFiles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/agentsFile"
+      }
+    },
+    "projectSkills": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/projectSkill"
+      }
+    },
+    "trackedGeneratedFolderPaths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/trackedGeneratedFolderPath"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "blockedChecks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    },
+    "dynamicVerification": {
+      "$ref": "#/$defs/dynamicVerification"
+    },
+    "finalStatus": {
+      "type": "string",
+      "enum": [
+        "STATIC_AUDIT_COMPLETE",
+        "STATIC_AUDIT_COMPLETE_WITH_WARNINGS",
+        "AUDIT_BLOCKED",
+        "NOT_A_UNITY_PROJECT"
+      ]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "code",
+        "check",
+        "path",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "check": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "id",
+        "check",
+        "status",
+        "source",
+        "detail"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^E[0-9]{3,}$"
+        },
+        "check": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OBSERVED",
+            "WARNING",
+            "NOT_AVAILABLE",
+            "NOT_VERIFIED",
+            "BLOCKED"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "projectDetection": {
+      "type": "object",
+      "required": [
+        "isUnityProject",
+        "rootStatus",
+        "markers"
+      ],
+      "properties": {
+        "isUnityProject": {
+          "type": "boolean"
+        },
+        "rootStatus": {
+          "type": "string",
+          "enum": [
+            "UNKNOWN",
+            "UNITY_PROJECT",
+            "NOT_A_UNITY_PROJECT",
+            "BLOCKED"
+          ]
+        },
+        "markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/projectMarker"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "projectMarker": {
+      "type": "object",
+      "required": [
+        "path",
+        "expectedType",
+        "status"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedType": {
+          "type": "string",
+          "enum": [
+            "Directory",
+            "File"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PRESENT",
+            "MISSING",
+            "WRONG_TYPE",
+            "BLOCKED_REPARSE_POINT",
+            "BLOCKED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "unityEditorVersion": {
+      "type": "object",
+      "required": [
+        "source",
+        "parseStatus",
+        "editorVersion",
+        "editorVersionWithRevision"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "const": "ProjectSettings/ProjectVersion.txt"
+        },
+        "parseStatus": {
+          "type": "string",
+          "enum": [
+            "NOT_INSPECTED",
+            "PARSED",
+            "MALFORMED",
+            "BLOCKED"
+          ]
+        },
+        "editorVersion": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "editorVersionWithRevision": {
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "git": {
+      "type": "object",
+      "required": [
+        "gitAvailable",
+        "metadataStatus",
+        "worktree",
+        "topLevel",
+        "branch",
+        "detachedHead",
+        "headCommit",
+        "dirtyState",
+        "dirty",
+        "changedPaths"
+      ],
+      "properties": {
+        "gitAvailable": {
+          "type": "boolean"
+        },
+        "metadataStatus": {
+          "type": "string",
+          "enum": [
+            "NOT_INSPECTED",
+            "NOT_FOUND",
+            "UNSAFE",
+            "INVALID_GIT_FILE",
+            "OUTSIDE_PROJECT_ROOT",
+            "UNSAFE_GITDIR",
+            "UNSAFE_LAYOUT",
+            "GIT_EXECUTABLE_NOT_FOUND",
+            "PROJECT_LOCAL_EXECUTABLE_REFUSED",
+            "UNSAFE_WORKTREE_LAYOUT",
+            "QUERY_FAILED",
+            "TOPLEVEL_MISMATCH",
+            "SAFE"
+          ]
+        },
+        "worktree": {
+          "type": "boolean"
+        },
+        "topLevel": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "branch": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "detachedHead": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "headCommit": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "dirtyState": {
+          "type": "string",
+          "enum": [
+            "NOT_AVAILABLE",
+            "BLOCKED",
+            "CLEAN",
+            "DIRTY"
+          ]
+        },
+        "dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "changedPaths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/gitChangedPath"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "gitChangedPath": {
+      "type": "object",
+      "required": [
+        "status",
+        "indexStatus",
+        "workTreeStatus",
+        "path",
+        "originalPath"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2
+        },
+        "indexStatus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1
+        },
+        "workTreeStatus": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1
+        },
+        "path": {
+          "type": "string"
+        },
+        "originalPath": {
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "packages": {
+      "type": "object",
+      "required": [
+        "manifest",
+        "packagesLock",
+        "directDependencies",
+        "resolvedDependencies",
+        "directDependenciesMissingFromLock"
+      ],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/jsonFileStatus"
+        },
+        "packagesLock": {
+          "$ref": "#/$defs/jsonFileStatus"
+        },
+        "directDependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/directDependency"
+          }
+        },
+        "resolvedDependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resolvedDependency"
+          }
+        },
+        "directDependenciesMissingFromLock": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "jsonFileStatus": {
+      "type": "object",
+      "required": [
+        "path",
+        "exists",
+        "parseStatus",
+        "error"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "parseStatus": {
+          "type": "string",
+          "enum": [
+            "NOT_INSPECTED",
+            "PARSED",
+            "NOT_FOUND",
+            "INVALID_JSON",
+            "BLOCKED"
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "directDependency": {
+      "type": "object",
+      "required": [
+        "name",
+        "value",
+        "referenceType"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "referenceType": {
+          "type": "string",
+          "enum": [
+            "unknown",
+            "file",
+            "git",
+            "local",
+            "registry",
+            "other"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "resolvedDependency": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "depth",
+        "source"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "The packages-lock.json dependency depth, or null when absent."
+        },
+        "source": {
+          "$ref": "#/$defs/nullableString"
+        }
+      },
+      "additionalProperties": false
+    },
+    "assemblies": {
+      "type": "object",
+      "required": [
+        "asmdefs",
+        "confirmedTestAssemblies",
+        "candidateOnlyTestAssemblies"
+      ],
+      "properties": {
+        "asmdefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asmdef"
+          }
+        },
+        "confirmedTestAssemblies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/testAssemblyEvidence"
+          }
+        },
+        "candidateOnlyTestAssemblies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/testAssemblyEvidence"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "asmdef": {
+      "type": "object",
+      "required": [
+        "path",
+        "name",
+        "parseStatus",
+        "error",
+        "confirmedTestAssembly",
+        "confirmedEvidence",
+        "candidateOnlyTestAssembly",
+        "candidateEvidence"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "parseStatus": {
+          "type": "string",
+          "enum": [
+            "PARSED",
+            "INVALID_JSON",
+            "MISSING",
+            "WRONG_TYPE",
+            "REPARSE_POINT",
+            "OUTSIDE_ROOT",
+            "BLOCKED"
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "confirmedTestAssembly": {
+          "type": "boolean"
+        },
+        "confirmedEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "candidateOnlyTestAssembly": {
+          "type": "boolean"
+        },
+        "candidateEvidence": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "testAssemblyEvidence": {
+      "type": "object",
+      "required": [
+        "path",
+        "name",
+        "evidence"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "buildSettings": {
+      "type": "object",
+      "required": [
+        "path",
+        "exists",
+        "parseStatus",
+        "enabledScenes",
+        "disabledScenes",
+        "missingScenes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "const": "ProjectSettings/EditorBuildSettings.asset"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "parseStatus": {
+          "type": "string",
+          "enum": [
+            "NOT_INSPECTED",
+            "NOT_FOUND",
+            "PARSED",
+            "MALFORMED",
+            "BLOCKED"
+          ]
+        },
+        "enabledScenes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/buildScene"
+          }
+        },
+        "disabledScenes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/buildScene"
+          }
+        },
+        "missingScenes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/missingBuildScene"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "buildScenePathStatus": {
+      "type": "string",
+      "enum": [
+        "EMPTY",
+        "OUTSIDE_ROOT",
+        "PRESENT",
+        "MISSING",
+        "WRONG_TYPE",
+        "REPARSE_POINT",
+        "BLOCKED",
+        "INVALID_PATH"
+      ]
+    },
+    "buildScene": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "path",
+        "guid",
+        "exists",
+        "pathStatus"
+      ],
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "guid": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "pathStatus": {
+          "$ref": "#/$defs/buildScenePathStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "missingBuildScene": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "path",
+        "guid",
+        "reason"
+      ],
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "guid": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "reason": {
+          "$ref": "#/$defs/buildScenePathStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agentsFile": {
+      "type": "object",
+      "required": [
+        "path",
+        "scope"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "projectSkill": {
+      "type": "object",
+      "required": [
+        "path",
+        "scope",
+        "name",
+        "parseStatus"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "parseStatus": {
+          "type": "string",
+          "enum": [
+            "NOT_FOUND",
+            "PARSED",
+            "NAME_INVALID",
+            "NAME_NOT_FOUND",
+            "FRONTMATTER_INVALID",
+            "BLOCKED"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "trackedGeneratedFolderPath": {
+      "type": "object",
+      "required": [
+        "generatedFolder",
+        "path"
+      ],
+      "properties": {
+        "generatedFolder": {
+          "type": "string",
+          "enum": [
+            "Library",
+            "Temp",
+            "Obj",
+            "Logs",
+            "UserSettings",
+            "Build",
+            "Builds",
+            "MemoryCaptures",
+            "Recordings"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "dynamicVerification": {
+      "type": "object",
+      "required": [
+        "compilation",
+        "tests",
+        "build",
+        "runtime"
+      ],
+      "properties": {
+        "compilation": {
+          "$ref": "#/$defs/notVerifiedCheck"
+        },
+        "tests": {
+          "$ref": "#/$defs/notVerifiedCheck"
+        },
+        "build": {
+          "$ref": "#/$defs/notVerifiedCheck"
+        },
+        "runtime": {
+          "$ref": "#/$defs/notVerifiedCheck"
+        }
+      },
+      "additionalProperties": false
+    },
+    "notVerifiedCheck": {
+      "type": "object",
+      "required": [
+        "status",
+        "reason"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "NOT_VERIFIED"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
