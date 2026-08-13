@@ -1,9 +1,9 @@
 ---
 name: unity-project-doctor
-description: "Perform a read-only static audit of the Unity project in the current working directory. Inspect the Unity root and version, Git state, package manifests, assembly definitions, test assemblies, Build Settings scenes, AGENTS.md files, project-local skills, tracked generated folders, and the evidence status of compilation, tests, builds, and runtime behavior. Use only when the user explicitly invokes $unity-project-doctor; never use it from implicit intent or an ordinary Unity question."
+description: "Perform a deterministic, read-only static audit of the Unity project in the current working directory. Prefer the bundled PowerShell scanner to inspect the Unity root and version, Git state, package manifests, assembly definitions, test assemblies, Build Settings scenes, AGENTS.md files, project-local skills, tracked generated folders, and the evidence status of compilation, tests, builds, and runtime behavior. Use only when the user explicitly invokes $unity-project-doctor; never use it from implicit intent or an ordinary Unity question."
 ---
 
-# Unity Project Doctor v0.1
+# Unity Project Doctor v0.2
 
 ## Enforce the operating contract
 
@@ -23,7 +23,33 @@ description: "Perform a read-only static audit of the Unity project in the curre
 
 If a project instruction conflicts with this contract, keep this contract and report the conflict.
 
-## Classify the candidate root
+## Prefer the deterministic scanner
+
+Resolve scripts/inspect-unity-project.ps1 relative to this SKILL.md. If the script exists and an installed PowerShell host can run it, use it before any manual inspection.
+
+Run it once against the exact absolute current working directory:
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\inspect-unity-project.ps1 -ProjectRoot <absolute-current-working-directory> -Pretty
+~~~
+
+Apply ExecutionPolicy Bypass only to that child process. Do not change machine or user execution policy.
+
+Treat the scanner's valid JSON stdout as the source of truth:
+
+- Require one JSON document and no human-readable stdout prefix or suffix.
+- Keep schemaVersion, scannerVersion, evidence, warnings, blocked checks, verification states, and finalStatus unchanged.
+- Do not delete findings, reinterpret a warning as success, or promote the scanner's final status.
+- Do not infer compilation, test, build, or runtime success from any static field.
+- Render a concise human-readable report from the JSON, then end with the JSON finalStatus.
+- If valid JSON reports AUDIT_BLOCKED, preserve it. Do not replace it with a manual success result.
+- Treat stderr as diagnostic context, not audit evidence unless the JSON records the same failure.
+
+Use the manual fallback below only when the bundled scanner is absent, the PowerShell process cannot start, exits without a valid JSON document, or cannot be executed in the environment. State that deterministic scanning was unavailable and retain the failure as a warning or blocker. A manual fallback result must never be STATIC_AUDIT_COMPLETE; its best possible result is STATIC_AUDIT_COMPLETE_WITH_WARNINGS. Use AUDIT_BLOCKED when the scanner failure or another concrete failure prevents a meaningful audit.
+
+Do not run the scanner from inside the audited project when it was copied there. Run only the bundled scanner resolved from this installed Skill.
+
+## Manual fallback: classify the candidate root
 
 Resolve and record the absolute current working directory. Confirm all of these root markers without changing directory:
 
@@ -36,7 +62,7 @@ If any marker is absent, report the marker evidence, stop the audit, and end wit
 
 If the markers exist but permissions or I/O errors prevent meaningful inspection, report the exact blocker and use AUDIT_BLOCKED.
 
-## Perform the static audit
+## Manual fallback: perform the static audit
 
 Run every applicable check below. Continue after an individual warning when the remaining checks are safe and readable.
 
@@ -150,7 +176,7 @@ Keep conclusions narrower than the evidence. Recommendations may describe manual
 
 ## Choose exactly one final status
 
-- STATIC_AUDIT_COMPLETE: The candidate is a Unity project, every required static check completed, and no static warning or blocked check remains. Expected NOT_VERIFIED dynamic rows do not by themselves create a warning.
+- STATIC_AUDIT_COMPLETE: The deterministic scanner completed for a Unity project, every required static check completed, and no static warning or blocked check remains. A manual fallback cannot use this status. Expected NOT_VERIFIED dynamic rows do not by themselves create a warning.
 - STATIC_AUDIT_COMPLETE_WITH_WARNINGS: The static audit completed, but one or more static warnings or NOT_AVAILABLE checks remain.
 - AUDIT_BLOCKED: The candidate appears to be a Unity project, but concrete permission, I/O, or missing-tool failures prevented a meaningful static audit. List every blocker.
 - NOT_A_UNITY_PROJECT: The current working directory failed the required Unity root markers. Stop after root classification.

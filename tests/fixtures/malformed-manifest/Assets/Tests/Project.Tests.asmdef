@@ -1,0 +1,6 @@
+{
+  "name": "MalformedManifest.Tests",
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

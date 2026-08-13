@@ -1,0 +1,10 @@
+%YAML 1.1
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/Main.unity
+    guid: 22222222222222222222222222222222
+  m_configObjects: {}

@@ -1,0 +1,6 @@
+{
+  "name": "MissingScene.Tests",
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

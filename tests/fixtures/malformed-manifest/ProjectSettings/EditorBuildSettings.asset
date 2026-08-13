@@ -1,0 +1,8 @@
+%YAML 1.1
+--- !u!1045 &1
+EditorBuildSettings:
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/Main.unity
+    guid: 33333333333333333333333333333333
+  m_configObjects: {}
