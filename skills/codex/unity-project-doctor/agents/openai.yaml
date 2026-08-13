@@ -1,0 +1,7 @@
+interface:
+  display_name: "Unity Project Doctor"
+  short_description: "Read-only static Unity project audit"
+  default_prompt: "Use $unity-project-doctor to audit the Unity project in the current working directory without changing it."
+
+policy:
+  allow_implicit_invocation: false
