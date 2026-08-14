@@ -4,6 +4,30 @@
 
 ## Unreleased
 
+### Unity Baseline Verification 0.1.2 original-integrity classification
+
+#### Added
+
+- Separate deterministic `.git` metadata snapshots with exact added, removed, changed, and disallowed-path evidence
+- A narrowly scoped `AMBIENT_CODEX_CHECKPOINTS_ONLY` classification for additions below `.git/refs/codex/turn-diffs/checkpoints/`
+- Regression coverage proving checkpoint additions remain non-blocking while HEAD, index, config, hooks, ordinary refs, and source-content changes remain detectable
+- A v0.1.2 signed-Unity rerun gate that does not claim acceptance before an explicit real-Unity run
+
+#### Changed
+
+- `unity-baseline-verification` component/verifier version is now 0.1.2; result `schemaVersion` and the four final status names are unchanged
+- Original source-content integrity now uses the exact Doctor/Baseline copy set instead of hashing generated, tooling, agent, IDE, and version-control trees excluded from isolation
+- Git metadata integrity is reported independently from source-content integrity
+
+#### Fixed
+
+- A successful isolated compilation is no longer rejected solely because the Codex app adds checkpoint refs during verification
+
+#### Security
+
+- Only new checkpoint-namespace paths are ambient; any existing Git metadata change or removal and every addition outside that namespace still produces `ORIGINAL_PROJECT_CHANGED`
+- No automatic cleanup, rollback, Git mutation, Unity scope expansion, or implicit Skill invocation was added
+
 ### Unity Baseline Verification 0.1.1 hardening
 
 #### Added

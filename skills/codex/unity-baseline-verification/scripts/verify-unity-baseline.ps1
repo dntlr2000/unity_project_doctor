@@ -29,7 +29,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:SchemaVersion = "1.1.0"
-$script:VerifierVersion = "0.1.1"
+$script:VerifierVersion = "0.1.2"
 $script:ExpectedDoctorSchemaVersion = "1.1.0"
 $script:ExpectedDoctorScannerVersion = "0.2.1"
 $script:LegacyDoctorSchemaVersion = "1.0.0"
@@ -37,6 +37,7 @@ $script:ExpectedUnityVersion = "6000.0.69f1"
 $script:ValidatorLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\json-schema-validator.ps1"
 $script:ProcessLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-process-job.ps1"
 $script:EditorLogLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-editor-log.ps1"
+$script:GitIntegrityLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\git-metadata-integrity.ps1"
 $script:CodexSkillsRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:FingerprintLibraryPath = Join-Path -Path $script:CodexSkillsRoot -ChildPath "unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
 $script:IsWindowsPlatform = $env:OS -eq "Windows_NT"
@@ -66,6 +67,8 @@ $script:NormalizedProjectRoot = $null
 $script:SessionRoot = $null
 $script:OriginalSnapshotBefore = $null
 $script:OriginalSnapshotAfter = $null
+$script:GitMetadataSnapshotBefore = $null
+$script:GitMetadataSnapshotAfter = $null
 
 [Console]::OutputEncoding = $script:Utf8NoBom
 
@@ -134,6 +137,7 @@ function New-VerificationResult {
             sourceEditorProcessIds = @()
             sourceEditorDetected = $null
             sourceSnapshotStable = $false
+            gitMetadataSnapshotAccepted = $false
             artifactRootOutsideProject = $false
             trustedPathsWithoutReparse = $false
         }
@@ -176,6 +180,8 @@ function New-VerificationResult {
             classification = "NOT_ANALYZED"
         }
         originalProjectIntegrity = [ordered]@{
+            scope = "BASELINE_COPY_SET"
+            excludedTopLevelPaths = @($script:ExcludedTopLevelNames)
             status = "NOT_VERIFIED"
             beforeDirectoryCount = $null
             afterDirectoryCount = $null
@@ -189,6 +195,31 @@ function New-VerificationResult {
             addedFiles = @()
             removedFiles = @()
             changedFiles = @()
+        }
+        gitMetadataIntegrity = [ordered]@{
+            scope = ".git"
+            status = "NOT_VERIFIED"
+            presentBefore = $null
+            presentAfter = $null
+            entryTypeBefore = $null
+            entryTypeAfter = $null
+            beforeDirectoryCount = $null
+            afterDirectoryCount = $null
+            beforeFileCount = $null
+            afterFileCount = $null
+            beforeTreeSha256 = $null
+            afterTreeSha256 = $null
+            unchanged = $null
+            ambientChangesAllowed = $false
+            allowedAdditionPrefix = ".git/refs/codex/turn-diffs/checkpoints/"
+            rootStateChanged = $false
+            addedDirectories = @()
+            removedDirectories = @()
+            addedFiles = @()
+            removedFiles = @()
+            changedFiles = @()
+            disallowedAddedDirectories = @()
+            disallowedAddedFiles = @()
         }
         verification = [ordered]@{
             scriptCompilation = [ordered]@{
@@ -699,76 +730,14 @@ function Read-JsonFile {
     return ConvertFrom-Json -InputObject $text -ErrorAction Stop
 }
 
-# Builds a complete directory and file SHA-256 snapshot without following links.
+# Builds the exact Doctor/Baseline copy-set snapshot while excluding generated, tooling, agent, and VCS trees.
 function Get-ProjectTreeSnapshot {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
     )
 
-    $normalizedRoot = Get-NormalizedAbsolutePath -Path $Root
-    $rootEntry = Get-Item -LiteralPath $normalizedRoot -Force -ErrorAction Stop
-    if (-not $rootEntry.PSIsContainer) {
-        throw "Snapshot root is not a directory: $normalizedRoot"
-    }
-    if (($rootEntry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Snapshot root is a reparse point: $normalizedRoot"
-    }
-
-    $directories = New-Object System.Collections.ArrayList
-    $files = New-Object System.Collections.ArrayList
-    $queue = New-Object "System.Collections.Generic.Queue[string]"
-    $queue.Enqueue($normalizedRoot)
-
-    while ($queue.Count -gt 0) {
-        $currentDirectory = $queue.Dequeue()
-        $entries = @(
-            Get-ChildItem -LiteralPath $currentDirectory -Force -ErrorAction Stop |
-                Sort-Object -Property FullName
-        )
-        foreach ($entry in $entries) {
-            if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                $relativeReparsePath = ConvertTo-ProjectRelativePath -Path $entry.FullName
-                throw "Project tree contains a reparse point: $relativeReparsePath"
-            }
-
-            $relativePath = ConvertTo-ProjectRelativePath -Path $entry.FullName
-            if ($entry.PSIsContainer) {
-                [void]$directories.Add($relativePath)
-                $queue.Enqueue($entry.FullName)
-                continue
-            }
-
-            if (-not (Test-Path -LiteralPath $entry.FullName -PathType Leaf)) {
-                throw "Project tree contains an unsupported filesystem entry: $relativePath"
-            }
-
-            [void]$files.Add([pscustomobject][ordered]@{
-                path = $relativePath
-                length = [long]$entry.Length
-                sha256 = Get-FileSha256 -Path $entry.FullName
-            })
-        }
-    }
-
-    $sortedDirectories = @($directories | Sort-Object)
-    $sortedFiles = @($files | Sort-Object -Property path)
-    $canonicalLines = New-Object System.Collections.ArrayList
-    foreach ($directory in $sortedDirectories) {
-        [void]$canonicalLines.Add("D|$directory")
-    }
-    foreach ($file in $sortedFiles) {
-        [void]$canonicalLines.Add("F|$($file.path)|$($file.length)|$($file.sha256)")
-    }
-    $canonicalText = [string]::Join([char]10, [string[]]@($canonicalLines))
-
-    return [pscustomobject][ordered]@{
-        directories = $sortedDirectories
-        files = $sortedFiles
-        directoryCount = $sortedDirectories.Count
-        fileCount = $sortedFiles.Count
-        treeSha256 = Get-StringSha256 -Text $canonicalText
-    }
+    return Get-UnityCopySetSnapshot -ProjectRoot $Root
 }
 
 # Compares two project snapshots and returns every structural or content difference.
@@ -1321,7 +1290,7 @@ function Test-DoctorResult {
     $script:Result.doctor.projectFingerprint = $doctorFingerprint
 
     if ([string]$schemaVersion -eq $script:LegacyDoctorSchemaVersion) {
-        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_CONTRACT_REQUIRED" -Message "Doctor schema 1.0.0 remains valid for static audit, but Baseline v0.1.1 requires schema 1.1.0 copy-set fingerprint evidence." -JsonPath '$.schemaVersion' -Keyword 'const'
+        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_CONTRACT_REQUIRED" -Message "Doctor schema 1.0.0 remains valid for static audit, but Baseline v0.1.2 requires schema 1.1.0 copy-set fingerprint evidence." -JsonPath '$.schemaVersion' -Keyword 'const'
         return
     }
     if ([string]$scannerVersion -ne $script:ExpectedDoctorScannerVersion) {
@@ -1813,7 +1782,7 @@ function Set-CompilationVerification {
     Add-Blocker -Code "EDITOR_LOG_INCONCLUSIVE" -Check "scriptCompilation" -Path $script:Result.artifacts.editorLogPath -Message "Editor.log is inconclusive. Missing markers: $([string]::Join(', ', [string[]]@($script:Result.editorLog.missingSuccessMarkers)))"
 }
 
-# Stores concise before/after snapshot summaries in the public result.
+# Stores concise before/after copy-set snapshot summaries in the public result.
 function Set-IntegritySnapshotSummaries {
     if ($null -ne $script:OriginalSnapshotBefore) {
         $script:Result.originalProjectIntegrity.beforeDirectoryCount = $script:OriginalSnapshotBefore.directoryCount
@@ -1827,15 +1796,96 @@ function Set-IntegritySnapshotSummaries {
     }
 }
 
+# Stores concise before/after .git metadata snapshot summaries in the public result.
+function Set-GitMetadataSnapshotSummaries {
+    if ($null -ne $script:GitMetadataSnapshotBefore) {
+        $script:Result.gitMetadataIntegrity.presentBefore = [bool]$script:GitMetadataSnapshotBefore.present
+        $script:Result.gitMetadataIntegrity.entryTypeBefore = [string]$script:GitMetadataSnapshotBefore.entryType
+        $script:Result.gitMetadataIntegrity.beforeDirectoryCount = [int]$script:GitMetadataSnapshotBefore.directoryCount
+        $script:Result.gitMetadataIntegrity.beforeFileCount = [int]$script:GitMetadataSnapshotBefore.fileCount
+        $script:Result.gitMetadataIntegrity.beforeTreeSha256 = [string]$script:GitMetadataSnapshotBefore.treeSha256
+    }
+    if ($null -ne $script:GitMetadataSnapshotAfter) {
+        $script:Result.gitMetadataIntegrity.presentAfter = [bool]$script:GitMetadataSnapshotAfter.present
+        $script:Result.gitMetadataIntegrity.entryTypeAfter = [string]$script:GitMetadataSnapshotAfter.entryType
+        $script:Result.gitMetadataIntegrity.afterDirectoryCount = [int]$script:GitMetadataSnapshotAfter.directoryCount
+        $script:Result.gitMetadataIntegrity.afterFileCount = [int]$script:GitMetadataSnapshotAfter.fileCount
+        $script:Result.gitMetadataIntegrity.afterTreeSha256 = [string]$script:GitMetadataSnapshotAfter.treeSha256
+    }
+}
+
+# Copies one Git metadata assessment into the stable JSON result shape.
+function Set-GitMetadataAssessmentResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Assessment
+    )
+
+    $script:Result.gitMetadataIntegrity.status = [string]$Assessment.status
+    $script:Result.gitMetadataIntegrity.unchanged = [bool]$Assessment.unchanged
+    $script:Result.gitMetadataIntegrity.ambientChangesAllowed = [bool]$Assessment.ambientChangesAllowed
+    $script:Result.gitMetadataIntegrity.allowedAdditionPrefix = [string]$Assessment.allowedAdditionPrefix
+    $script:Result.gitMetadataIntegrity.rootStateChanged = [bool]$Assessment.rootStateChanged
+    $script:Result.gitMetadataIntegrity.addedDirectories = @($Assessment.addedDirectories)
+    $script:Result.gitMetadataIntegrity.removedDirectories = @($Assessment.removedDirectories)
+    $script:Result.gitMetadataIntegrity.addedFiles = @($Assessment.addedFiles)
+    $script:Result.gitMetadataIntegrity.removedFiles = @($Assessment.removedFiles)
+    $script:Result.gitMetadataIntegrity.changedFiles = @($Assessment.changedFiles)
+    $script:Result.gitMetadataIntegrity.disallowedAddedDirectories = @($Assessment.disallowedAddedDirectories)
+    $script:Result.gitMetadataIntegrity.disallowedAddedFiles = @($Assessment.disallowedAddedFiles)
+}
+
+# Returns true only for Git metadata states that preserve the v0.1.2 integrity contract.
+function Test-GitMetadataIntegrityAccepted {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Status
+    )
+
+    return @("NOT_PRESENT", "UNCHANGED", "AMBIENT_CODEX_CHECKPOINTS_ONLY") -contains $Status
+}
+
+# Captures two pre-run Git metadata snapshots and permits only checkpoint-namespace additions between them.
+function Initialize-GitMetadataIntegrity {
+    try {
+        $script:GitMetadataSnapshotBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:NormalizedProjectRoot
+        Set-GitMetadataSnapshotSummaries
+        $stabilitySnapshot = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:NormalizedProjectRoot
+        $assessment = Get-BaselineGitMetadataAssessment -Before $script:GitMetadataSnapshotBefore -After $stabilitySnapshot
+        if (-not (Test-GitMetadataIntegrityAccepted -Status $assessment.status)) {
+            $script:Result.gitMetadataIntegrity.status = "BLOCKED"
+            Add-Blocker -Code "GIT_METADATA_SNAPSHOT_UNSTABLE" -Check "gitMetadataIntegrity" -Path (Join-Path $script:NormalizedProjectRoot ".git") -Message "Git metadata changed outside the allowed Codex checkpoint-addition namespace during preflight."
+            return
+        }
+
+        $script:Result.preflight.gitMetadataSnapshotAccepted = $true
+        $detail = if ($assessment.status -eq "AMBIENT_CODEX_CHECKPOINTS_ONLY") {
+            "Preflight observed only added paths under the Codex checkpoint namespace; no existing Git metadata changed or disappeared."
+        } else {
+            "Two preflight Git metadata snapshots were identical or .git was absent."
+        }
+        Add-Evidence -Check "gitMetadataBefore" -Status "OBSERVED" -Source (Join-Path $script:NormalizedProjectRoot ".git") -Detail $detail
+    } catch {
+        $script:Result.gitMetadataIntegrity.status = "BLOCKED"
+        Add-Blocker -Code "GIT_METADATA_PRE_SNAPSHOT_FAILED" -Check "gitMetadataIntegrity" -Path (Join-Path $script:NormalizedProjectRoot ".git") -Message "The in-project Git metadata could not be hashed safely: $($_.Exception.Message)"
+    }
+}
+
 # Finalizes blockers, evidence, untouched scope rows, and exactly one final status.
 function Complete-VerificationResult {
     $script:Result.doctor.validationErrors = @($script:DoctorValidationErrors)
     $script:Result.blockers = @($script:Blockers)
     $script:Result.evidence = @($script:Evidence)
 
-    if ($script:Result.originalProjectIntegrity.status -eq "CHANGED") {
+    if (
+        $script:Result.originalProjectIntegrity.status -eq "CHANGED" -or
+        $script:Result.gitMetadataIntegrity.status -eq "CHANGED"
+    ) {
         $script:Result.finalStatus = "ORIGINAL_PROJECT_CHANGED"
-    } elseif ($script:Result.originalProjectIntegrity.status -eq "BLOCKED") {
+    } elseif (
+        $script:Result.originalProjectIntegrity.status -eq "BLOCKED" -or
+        $script:Result.gitMetadataIntegrity.status -eq "BLOCKED"
+    ) {
         $script:Result.finalStatus = "VERIFICATION_BLOCKED"
     } elseif ($script:Result.verification.scriptCompilation.status -eq "VERIFIED_FAILURE") {
         $script:Result.finalStatus = "BASELINE_FAILED"
@@ -1843,7 +1893,8 @@ function Complete-VerificationResult {
         $script:Result.finalStatus = "VERIFICATION_BLOCKED"
     } elseif (
         $script:Result.verification.scriptCompilation.status -eq "VERIFIED_SUCCESS" -and
-        $script:Result.originalProjectIntegrity.status -eq "UNCHANGED"
+        $script:Result.originalProjectIntegrity.status -eq "UNCHANGED" -and
+        (Test-GitMetadataIntegrityAccepted -Status $script:Result.gitMetadataIntegrity.status)
     ) {
         $script:Result.finalStatus = "BASELINE_VERIFIED"
     } else {
@@ -1892,6 +1943,7 @@ try {
             $script:ValidatorLibraryPath,
             $script:ProcessLibraryPath,
             $script:EditorLogLibraryPath,
+            $script:GitIntegrityLibraryPath,
             $script:FingerprintLibraryPath
         )) {
             if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
@@ -1939,19 +1991,23 @@ try {
     }
 
     if ($script:Blockers.Count -eq 0) {
+        Initialize-GitMetadataIntegrity
+    }
+
+    if ($script:Blockers.Count -eq 0) {
         try {
             $script:OriginalSnapshotBefore = Get-ProjectTreeSnapshot -Root $script:NormalizedProjectRoot
             Set-IntegritySnapshotSummaries
             $stabilitySnapshot = Get-ProjectTreeSnapshot -Root $script:NormalizedProjectRoot
             $stabilityComparison = Compare-ProjectTreeSnapshots -Before $script:OriginalSnapshotBefore -After $stabilitySnapshot
             if (-not $stabilityComparison.unchanged) {
-                Add-Blocker -Code "SOURCE_SNAPSHOT_UNSTABLE" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "Two consecutive complete source snapshots differed before isolation."
+                Add-Blocker -Code "SOURCE_SNAPSHOT_UNSTABLE" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "Two consecutive Baseline copy-set snapshots differed before isolation."
             } else {
                 $script:Result.preflight.sourceSnapshotStable = $true
-                Add-Evidence -Check "originalIntegrityBefore" -Status "OBSERVED" -Source $script:NormalizedProjectRoot -Detail "Captured two identical complete source directory/file/length/SHA-256 snapshots before copying."
+                Add-Evidence -Check "originalIntegrityBefore" -Status "OBSERVED" -Source $script:NormalizedProjectRoot -Detail "Captured two identical Doctor/Baseline copy-set directory/file/length/SHA-256 snapshots before copying."
             }
         } catch {
-            Add-Blocker -Code "ORIGINAL_PRE_SNAPSHOT_FAILED" -Check "originalIntegrity" -Path $script:NormalizedProjectRoot -Message "The original pre-run tree could not be hashed safely: $($_.Exception.Message)"
+            Add-Blocker -Code "ORIGINAL_PRE_SNAPSHOT_FAILED" -Check "originalIntegrity" -Path $script:NormalizedProjectRoot -Message "The original pre-run Baseline copy set could not be hashed safely: $($_.Exception.Message)"
             $script:Result.originalProjectIntegrity.status = "BLOCKED"
         }
     }
@@ -2000,6 +2056,15 @@ try {
                     }
                 }
 
+                if ($script:Blockers.Count -eq 0 -and $null -ne $script:GitMetadataSnapshotBefore) {
+                    $preLaunchGitSnapshot = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:NormalizedProjectRoot
+                    $preLaunchGitAssessment = Get-BaselineGitMetadataAssessment -Before $script:GitMetadataSnapshotBefore -After $preLaunchGitSnapshot
+                    if (-not (Test-GitMetadataIntegrityAccepted -Status $preLaunchGitAssessment.status)) {
+                        $script:Result.preflight.gitMetadataSnapshotAccepted = $false
+                        Add-Blocker -Code "GIT_METADATA_CHANGED_DURING_ISOLATION" -Check "preflight" -Path (Join-Path $script:NormalizedProjectRoot ".git") -Message "Git metadata changed outside the allowed Codex checkpoint-addition namespace while the isolated copy was being prepared; Unity was not started."
+                    }
+                }
+
                 if ($script:Blockers.Count -eq 0) {
                     Invoke-IsolatedUnity
                     $script:Result.editorLog = Get-UnityEditorLogAnalysis -Path $script:Result.artifacts.editorLogPath -ExpectedProjectPath $script:Result.isolation.projectCopyPath -ExpectedUnityVersion $script:ExpectedUnityVersion
@@ -2024,14 +2089,35 @@ try {
                 $script:Result.originalProjectIntegrity.changedFiles = $comparison.changedFiles
                 if ($comparison.unchanged) {
                     $script:Result.originalProjectIntegrity.status = "UNCHANGED"
-                    Add-Evidence -Check "originalIntegrityAfter" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "The original pre/post directory list, file list, lengths, per-file SHA-256 values, and tree SHA-256 are identical."
+                    Add-Evidence -Check "originalIntegrityAfter" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "The original Doctor/Baseline copy-set directory list, file list, lengths, per-file SHA-256 values, and tree SHA-256 are identical."
                 } else {
                     $script:Result.originalProjectIntegrity.status = "CHANGED"
-                    Add-Evidence -Check "originalIntegrityAfter" -Status "FAILED" -Source $script:NormalizedProjectRoot -Detail "The original project tree differs from its pre-run snapshot. No automatic rollback was attempted."
+                    Add-Evidence -Check "originalIntegrityAfter" -Status "FAILED" -Source $script:NormalizedProjectRoot -Detail "The original Baseline copy set differs from its pre-run snapshot. No automatic rollback was attempted."
                 }
             } catch {
                 $script:Result.originalProjectIntegrity.status = "BLOCKED"
-                Add-Blocker -Code "ORIGINAL_POST_SNAPSHOT_FAILED" -Check "originalIntegrity" -Path $script:NormalizedProjectRoot -Message "The original post-run tree could not be hashed safely: $($_.Exception.Message)"
+                Add-Blocker -Code "ORIGINAL_POST_SNAPSHOT_FAILED" -Check "originalIntegrity" -Path $script:NormalizedProjectRoot -Message "The original post-run Baseline copy set could not be hashed safely: $($_.Exception.Message)"
+            }
+
+            if ($null -ne $script:GitMetadataSnapshotBefore) {
+                try {
+                    $script:GitMetadataSnapshotAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:NormalizedProjectRoot
+                    Set-GitMetadataSnapshotSummaries
+                    $gitAssessment = Get-BaselineGitMetadataAssessment -Before $script:GitMetadataSnapshotBefore -After $script:GitMetadataSnapshotAfter
+                    Set-GitMetadataAssessmentResult -Assessment $gitAssessment
+                    if ($gitAssessment.status -eq "CHANGED") {
+                        Add-Evidence -Check "gitMetadataAfter" -Status "FAILED" -Source (Join-Path $script:NormalizedProjectRoot ".git") -Detail "Git metadata changed outside the allowed Codex checkpoint-addition namespace. No automatic rollback was attempted."
+                    } elseif ($gitAssessment.status -eq "AMBIENT_CODEX_CHECKPOINTS_ONLY") {
+                        Add-Evidence -Check "gitMetadataAfter" -Status "OBSERVED" -Source (Join-Path $script:NormalizedProjectRoot ".git") -Detail "Only new paths under .git/refs/codex/turn-diffs/checkpoints/ were observed; existing Git metadata was unchanged and the additions were classified as ambient."
+                    } elseif ($gitAssessment.status -eq "NOT_PRESENT") {
+                        Add-Evidence -Check "gitMetadataAfter" -Status "OBSERVED" -Source (Join-Path $script:NormalizedProjectRoot ".git") -Detail "The source project had no in-project .git metadata before or after verification."
+                    } else {
+                        Add-Evidence -Check "gitMetadataAfter" -Status "PASSED" -Source (Join-Path $script:NormalizedProjectRoot ".git") -Detail "The in-project .git directory/file list, lengths, and SHA-256 values were unchanged."
+                    }
+                } catch {
+                    $script:Result.gitMetadataIntegrity.status = "BLOCKED"
+                    Add-Blocker -Code "GIT_METADATA_POST_SNAPSHOT_FAILED" -Check "gitMetadataIntegrity" -Path (Join-Path $script:NormalizedProjectRoot ".git") -Message "The post-run Git metadata could not be hashed safely: $($_.Exception.Message)"
+                }
             }
         }
     }
@@ -2040,7 +2126,7 @@ try {
 }
 
 foreach ($scopeName in @("tests", "playerBuild", "playMode", "runtime")) {
-    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "v0.1.1 scope" -Detail $script:Result.verification.$scopeName.reason
+    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "v0.1.2 scope" -Detail $script:Result.verification.$scopeName.reason
 }
 
 $finalJson = ConvertTo-FinalJson

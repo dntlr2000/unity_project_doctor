@@ -13,6 +13,8 @@ $script:SchemaPath = Join-Path -Path $script:RepositoryRoot -ChildPath "schemas\
 $script:SchemaValidatorPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1"
 $script:ProcessLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1"
 $script:EditorLogLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1"
+$script:GitIntegrityLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\git-metadata-integrity.ps1"
+$script:FingerprintLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
 $script:InstallerPath = Join-Path -Path $script:RepositoryRoot -ChildPath "scripts\install-codex-skills.ps1"
 $script:ScratchRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("unity-baseline-verification-tests-" + [guid]::NewGuid().ToString("N"))
 $script:Assertions = 0
@@ -112,11 +114,14 @@ function Test-PathWithinRoot {
     )
 }
 
-# Captures a compact repository file-list and SHA-256 snapshot.
+# Captures a compact file-list and SHA-256 snapshot with an optional top-level .git exclusion.
 function Get-TestTreeSnapshot {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Root
+        [string]$Root,
+
+        [Parameter()]
+        [switch]$ExcludeGitMetadata
     )
 
     $normalizedRoot = Get-NormalizedPath -Path $Root
@@ -127,6 +132,9 @@ function Get-TestTreeSnapshot {
     )
     foreach ($directory in $directories) {
         $relative = $directory.FullName.Substring($normalizedRoot.Length + 1).Replace("\", "/")
+        if ($ExcludeGitMetadata -and ($relative -eq '.git' -or $relative.StartsWith('.git/', [System.StringComparison]::OrdinalIgnoreCase))) {
+            continue
+        }
         [void]$lines.Add("D|$relative")
     }
     $files = @(
@@ -135,6 +143,9 @@ function Get-TestTreeSnapshot {
     )
     foreach ($file in $files) {
         $relative = $file.FullName.Substring($normalizedRoot.Length + 1).Replace("\", "/")
+        if ($ExcludeGitMetadata -and ($relative -eq '.git' -or $relative.StartsWith('.git/', [System.StringComparison]::OrdinalIgnoreCase))) {
+            continue
+        }
         $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
         [void]$lines.Add("F|$relative|$($file.Length)|$hash")
     }
@@ -190,6 +201,18 @@ function New-TestUnityProject {
     $fixtureSkillLines = @("---", "name: fixture", "description: fixture", "---")
     Write-TestText -Path (Join-Path $projectRoot ".agents\skills\fixture\SKILL.md") -Content ([string]::Join([Environment]::NewLine, $fixtureSkillLines))
     return Get-NormalizedPath -Path $projectRoot
+}
+
+# Creates minimal in-project Git metadata for deterministic integrity classification tests.
+function Initialize-TestGitMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProjectRoot
+    )
+
+    Write-TestText -Path (Join-Path $ProjectRoot '.git\HEAD') -Content "ref: refs/heads/main`n"
+    Write-TestText -Path (Join-Path $ProjectRoot '.git\config') -Content "[core]`nrepositoryformatversion = 0`n"
+    Write-TestText -Path (Join-Path $ProjectRoot '.git\index') -Content 'fixture-index'
 }
 
 # Runs Doctor 0.2.1 and writes its complete schema 1.1.0 stdout document outside the project.
@@ -590,10 +613,12 @@ function Invoke-InternalFakeUnity {
     }
 }
 
-Write-Host "Unity Baseline Verification v0.1.1 hardening tests"
+Write-Host "Unity Baseline Verification v0.1.2 integrity tests"
 Write-Host "Scratch root: $script:ScratchRoot"
 
-$repositoryBefore = Get-TestTreeSnapshot -Root $script:RepositoryRoot
+. $script:GitIntegrityLibraryPath
+$repositoryBefore = Get-TestTreeSnapshot -Root $script:RepositoryRoot -ExcludeGitMetadata
+$repositoryGitBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:RepositoryRoot
 $fixtureRoot = Join-Path $script:RepositoryRoot 'tests\fixtures'
 $fixturesBefore = Get-TestTreeSnapshot -Root $fixtureRoot
 [void][System.IO.Directory]::CreateDirectory($script:ScratchRoot)
@@ -605,6 +630,7 @@ try {
         'docs\skills\unity-baseline-verification.md',
         'docs\skills\unity-project-doctor.md',
         'docs\validation\v0.1.1-unity-baseline-real-unity-acceptance.md',
+        'docs\validation\v0.1.2-original-integrity-acceptance.md',
         'CHANGELOG.md',
         'skills\codex\unity-baseline-verification\VERSION',
         'skills\codex\unity-baseline-verification\SKILL.md',
@@ -613,6 +639,7 @@ try {
         'skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\git-metadata-integrity.ps1',
         'skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1',
         'scripts\install-codex-skills.ps1',
         'tests\unity-baseline-verification\run-tests.ps1',
@@ -621,7 +648,7 @@ try {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot $requiredRelativePath) -PathType Leaf) -Message "Required file $requiredRelativePath"
     }
 
-    Assert-Equal -Expected '0.1.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
+    Assert-Equal -Expected '0.1.2' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
     Assert-Equal -Expected '0.2.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-project-doctor\VERSION')).Trim()) -Message 'Doctor Skill VERSION'
     $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
     Assert-True -Condition ($skillContent -match '^---\r?\nname: unity-baseline-verification\r?\ndescription:') -Message 'Skill frontmatter'
@@ -648,6 +675,130 @@ try {
     . $script:SchemaValidatorPath
     . $script:ProcessLibraryPath
     . $script:EditorLogLibraryPath
+    . $script:GitIntegrityLibraryPath
+    . $script:FingerprintLibraryPath
+
+    $ambientProject = New-TestUnityProject -Name 'git-ambient-checkpoint'
+    Initialize-TestGitMetadata -ProjectRoot $ambientProject
+    $ambientContentBefore = Get-UnityCopySetSnapshot -ProjectRoot $ambientProject
+    $ambientGitBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $ambientProject
+    $ambientCheckpointPath = Join-Path $ambientProject '.git\refs\codex\turn-diffs\checkpoints\fixture\turn\checkpoint'
+    Write-TestText -Path $ambientCheckpointPath -Content 'checkpoint'
+    $ambientContentAfter = Get-UnityCopySetSnapshot -ProjectRoot $ambientProject
+    $ambientGitAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $ambientProject
+    $ambientAssessment = Get-BaselineGitMetadataAssessment -Before $ambientGitBefore -After $ambientGitAfter
+    Assert-Equal -Expected $ambientContentBefore.treeSha256 -Actual $ambientContentAfter.treeSha256 -Message 'Codex checkpoint leaves Baseline copy-set fingerprint unchanged'
+    Assert-Equal -Expected 'AMBIENT_CODEX_CHECKPOINTS_ONLY' -Actual $ambientAssessment.status -Message 'Codex checkpoint-only Git delta classification'
+    Assert-Equal -Expected $true -Actual $ambientAssessment.ambientChangesAllowed -Message 'Codex checkpoint additions are explicitly ambient'
+    Assert-Equal -Expected 0 -Actual $ambientAssessment.disallowedAddedFiles.Count -Message 'Checkpoint namespace has no disallowed added files'
+    Assert-Contains -Collection $ambientAssessment.addedFiles -Expected '.git/refs/codex/turn-diffs/checkpoints/fixture/turn/checkpoint' -Message 'Checkpoint evidence retains the exact added path'
+
+    $sensitiveGitCases = @(
+        [pscustomobject]@{
+            name = 'head-change'
+            expectedPath = '.git/HEAD'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\HEAD') -Content "ref: refs/heads/release`n" }
+        },
+        [pscustomobject]@{
+            name = 'index-change'
+            expectedPath = '.git/index'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\index') -Content 'changed-index' }
+        },
+        [pscustomobject]@{
+            name = 'config-change'
+            expectedPath = '.git/config'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\config') -Content "[core]`nrepositoryformatversion = 1`n" }
+        },
+        [pscustomobject]@{
+            name = 'hook-addition'
+            expectedPath = '.git/hooks/pre-commit'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\hooks\pre-commit') -Content 'blocked-hook' }
+        },
+        [pscustomobject]@{
+            name = 'ordinary-ref-addition'
+            expectedPath = '.git/refs/heads/new-branch'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\refs\heads\new-branch') -Content '0123456789abcdef' }
+        },
+        [pscustomobject]@{
+            name = 'object-addition'
+            expectedPath = '.git/objects/01/23456789abcdef'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\objects\01\23456789abcdef') -Content 'git-object' }
+        },
+        [pscustomobject]@{
+            name = 'checkpoint-prefix-lookalike'
+            expectedPath = '.git/refs/codex/turn-diffs/checkpoints-unsafe/file'
+            mutate = { param($root) Write-TestText -Path (Join-Path $root '.git\refs\codex\turn-diffs\checkpoints-unsafe\file') -Content 'not-a-checkpoint' }
+        }
+    )
+    foreach ($sensitiveCase in $sensitiveGitCases) {
+        $sensitiveProject = New-TestUnityProject -Name ("git-" + $sensitiveCase.name)
+        Initialize-TestGitMetadata -ProjectRoot $sensitiveProject
+        $sensitiveBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $sensitiveProject
+        & $sensitiveCase.mutate $sensitiveProject
+        $sensitiveAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $sensitiveProject
+        $sensitiveAssessment = Get-BaselineGitMetadataAssessment -Before $sensitiveBefore -After $sensitiveAfter
+        Assert-Equal -Expected 'CHANGED' -Actual $sensitiveAssessment.status -Message "$($sensitiveCase.name) remains blocking"
+        $reportedPaths = @($sensitiveAssessment.changedFiles | ForEach-Object pathAfter) + @($sensitiveAssessment.disallowedAddedFiles)
+        Assert-Contains -Collection $reportedPaths -Expected $sensitiveCase.expectedPath -Message "$($sensitiveCase.name) exact evidence path"
+    }
+
+    $checkpointChangeProject = New-TestUnityProject -Name 'git-existing-checkpoint-change'
+    Initialize-TestGitMetadata -ProjectRoot $checkpointChangeProject
+    $existingCheckpointPath = Join-Path $checkpointChangeProject '.git\refs\codex\turn-diffs\checkpoints\existing\checkpoint'
+    Write-TestText -Path $existingCheckpointPath -Content 'before'
+    $checkpointChangeBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $checkpointChangeProject
+    Write-TestText -Path $existingCheckpointPath -Content 'after'
+    $checkpointChangeAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $checkpointChangeProject
+    $checkpointChangeAssessment = Get-BaselineGitMetadataAssessment -Before $checkpointChangeBefore -After $checkpointChangeAfter
+    Assert-Equal -Expected 'CHANGED' -Actual $checkpointChangeAssessment.status -Message 'Existing checkpoint modification remains blocking'
+    Assert-Contains -Collection @($checkpointChangeAssessment.changedFiles | ForEach-Object pathAfter) -Expected '.git/refs/codex/turn-diffs/checkpoints/existing/checkpoint' -Message 'Existing checkpoint modification exact path'
+
+    $checkpointRemovalProject = New-TestUnityProject -Name 'git-existing-checkpoint-removal'
+    Initialize-TestGitMetadata -ProjectRoot $checkpointRemovalProject
+    $removedCheckpointPath = Join-Path $checkpointRemovalProject '.git\refs\codex\turn-diffs\checkpoints\existing\checkpoint'
+    Write-TestText -Path $removedCheckpointPath -Content 'before'
+    $checkpointRemovalBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $checkpointRemovalProject
+    Remove-Item -LiteralPath $removedCheckpointPath -Force
+    $checkpointRemovalAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $checkpointRemovalProject
+    $checkpointRemovalAssessment = Get-BaselineGitMetadataAssessment -Before $checkpointRemovalBefore -After $checkpointRemovalAfter
+    Assert-Equal -Expected 'CHANGED' -Actual $checkpointRemovalAssessment.status -Message 'Existing checkpoint removal remains blocking'
+    Assert-Contains -Collection $checkpointRemovalAssessment.removedFiles -Expected '.git/refs/codex/turn-diffs/checkpoints/existing/checkpoint' -Message 'Existing checkpoint removal exact path'
+
+    $noGitProject = New-TestUnityProject -Name 'git-not-present'
+    $noGitBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $noGitProject
+    $noGitAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $noGitProject
+    $noGitAssessment = Get-BaselineGitMetadataAssessment -Before $noGitBefore -After $noGitAfter
+    Assert-Equal -Expected 'NOT_PRESENT' -Actual $noGitAssessment.status -Message 'Absent in-project Git metadata is explicitly classified'
+
+    $gitReparseProject = New-TestUnityProject -Name 'git-reparse-blocked'
+    $gitReparseTarget = Join-Path $script:ScratchRoot 'outside-git-reparse-target'
+    [void][System.IO.Directory]::CreateDirectory($gitReparseTarget)
+    Write-TestText -Path (Join-Path $gitReparseTarget 'HEAD') -Content "ref: refs/heads/main`n"
+    New-Item -ItemType Junction -Path (Join-Path $gitReparseProject '.git') -Target $gitReparseTarget -ErrorAction Stop | Out-Null
+    $gitReparseBlocked = $false
+    try {
+        [void](Get-BaselineGitMetadataSnapshot -ProjectRoot $gitReparseProject)
+    } catch {
+        $gitReparseBlocked = $_.Exception.Message -match 'reparse point'
+    }
+    Assert-Equal -Expected $true -Actual $gitReparseBlocked -Message 'In-project .git reparse point is blocked without traversal'
+
+    $contentMutationProject = New-TestUnityProject -Name 'copy-set-content-change'
+    Initialize-TestGitMetadata -ProjectRoot $contentMutationProject
+    $contentMutationBefore = Get-UnityCopySetSnapshot -ProjectRoot $contentMutationProject
+    $contentMutationGitBefore = Get-BaselineGitMetadataSnapshot -ProjectRoot $contentMutationProject
+    Write-TestText -Path (Join-Path $contentMutationProject 'Assets\Scripts\Probe.cs') -Content 'public sealed class Probe { public int Value = 2; }'
+    $contentMutationAfter = Get-UnityCopySetSnapshot -ProjectRoot $contentMutationProject
+    $contentMutationGitAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $contentMutationProject
+    $contentMutationGitAssessment = Get-BaselineGitMetadataAssessment -Before $contentMutationGitBefore -After $contentMutationGitAfter
+    Assert-True -Condition ($contentMutationBefore.treeSha256 -ne $contentMutationAfter.treeSha256) -Message 'Copy-included source mutation changes content fingerprint'
+    Assert-Equal -Expected 'UNCHANGED' -Actual $contentMutationGitAssessment.status -Message 'Content mutation does not fabricate a Git metadata delta'
+
+    $generatedMutationProject = New-TestUnityProject -Name 'excluded-generated-change'
+    $generatedMutationBefore = Get-UnityCopySetSnapshot -ProjectRoot $generatedMutationProject
+    Write-TestText -Path (Join-Path $generatedMutationProject 'Library\Generated.cache') -Content 'changed-generated-library'
+    $generatedMutationAfter = Get-UnityCopySetSnapshot -ProjectRoot $generatedMutationProject
+    Assert-Equal -Expected $generatedMutationBefore.treeSha256 -Actual $generatedMutationAfter.treeSha256 -Message 'Excluded generated-tree mutation leaves content fingerprint unchanged'
 
     $fakeUnity = New-FakeUnityExecutable -OutputPath (Join-Path $script:ScratchRoot 'fake-unity\6000.0.69f1\Editor\Unity.exe') -ProductVersion '6000.0.69f1_5f8607f5118b'
     $fakeVersionInfo = (Get-Item -LiteralPath $fakeUnity).VersionInfo
@@ -707,7 +858,7 @@ try {
     $validAfter = Get-TestTreeSnapshot -Root $validProject
     Assert-Equal -Expected 'VERIFICATION_BLOCKED' -Actual $unsignedProduction.result.finalStatus -Message 'Unsigned production final status'
     Assert-Equal -Expected '1.1.0' -Actual $unsignedProduction.result.schemaVersion -Message 'Baseline result schema version'
-    Assert-Equal -Expected '0.1.1' -Actual $unsignedProduction.result.verifierVersion -Message 'Baseline verifier version'
+    Assert-Equal -Expected '0.1.2' -Actual $unsignedProduction.result.verifierVersion -Message 'Baseline verifier version'
     Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.accepted -Message 'Valid full Doctor accepted'
     Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.fingerprintMatched -Message 'Doctor/current fingerprint matched'
     Assert-Equal -Expected $false -Actual $unsignedProduction.result.unity.processStarted -Message 'Unsigned fake blocked before process start'
@@ -723,6 +874,9 @@ try {
     Assert-True -Condition (-not (Test-Path -LiteralPath $unsignedProduction.argumentsPath)) -Message 'Unsigned production fake has no invocation arguments'
     Assert-True -Condition $unsignedProduction.result.artifacts.resultWritten -Message 'Blocked result artifact written externally'
     Assert-Equal -Expected $unsignedProduction.json -Actual ([System.IO.File]::ReadAllText($unsignedProduction.result.artifacts.resultPath, $script:Utf8NoBom)) -Message 'stdout is the exact one result artifact JSON'
+    Assert-Equal -Expected 'BASELINE_COPY_SET' -Actual $unsignedProduction.result.originalProjectIntegrity.scope -Message 'Original content integrity scope'
+    Assert-Equal -Expected '.git' -Actual $unsignedProduction.result.gitMetadataIntegrity.scope -Message 'Separate Git metadata integrity scope'
+    Assert-Equal -Expected '.git/refs/codex/turn-diffs/checkpoints/' -Actual $unsignedProduction.result.gitMetadataIntegrity.allowedAdditionPrefix -Message 'Exact ambient checkpoint prefix'
     foreach ($scopeName in @('tests', 'playerBuild', 'playMode', 'runtime')) {
         Assert-Equal -Expected 'NOT_VERIFIED' -Actual $unsignedProduction.result.verification.$scopeName.status -Message "$scopeName remains NOT_VERIFIED"
     }
@@ -863,8 +1017,11 @@ try {
 
     $fixturesAfter = Get-TestTreeSnapshot -Root $fixtureRoot
     Assert-Equal -Expected $fixturesBefore -Actual $fixturesAfter -Message 'Fixture file list and hashes remain unchanged'
-    $repositoryAfter = Get-TestTreeSnapshot -Root $script:RepositoryRoot
-    Assert-Equal -Expected $repositoryBefore -Actual $repositoryAfter -Message 'Test suite leaves repository byte-for-byte unchanged'
+    $repositoryAfter = Get-TestTreeSnapshot -Root $script:RepositoryRoot -ExcludeGitMetadata
+    Assert-Equal -Expected $repositoryBefore -Actual $repositoryAfter -Message 'Test suite leaves repository content byte-for-byte unchanged'
+    $repositoryGitAfter = Get-BaselineGitMetadataSnapshot -ProjectRoot $script:RepositoryRoot
+    $repositoryGitAssessment = Get-BaselineGitMetadataAssessment -Before $repositoryGitBefore -After $repositoryGitAfter
+    Assert-True -Condition (@('UNCHANGED', 'AMBIENT_CODEX_CHECKPOINTS_ONLY') -contains $repositoryGitAssessment.status) -Message 'Test suite changes no Git metadata outside ambient Codex checkpoints'
 
     $script:TestsPassed = $true
     Write-Host "All tests passed. Assertions: $($script:Assertions)"

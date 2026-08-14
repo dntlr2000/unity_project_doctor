@@ -1,4 +1,4 @@
-# Unity Baseline Verification 0.1.1
+# Unity Baseline Verification 0.1.2
 
 Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. It fully validates Doctor evidence, binds that evidence to current content, copies only the approved file set to an external temporary session, and runs only a trusted Unity.exe against that copy.
 
@@ -19,14 +19,16 @@ Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
 - Logs, captured streams, result JSON, the Job Object session, and the copied project stay outside the source project.
 - The source root, Doctor JSON, Unity.exe, artifact root, and copy-included package paths must not traverse reparse points.
 - The exact source project must not already be open through a running `Unity.exe -projectPath` argument. Unrelated Unity projects are not blocked.
-- Two complete source snapshots must be identical before copying, and another must still match before Unity starts.
-- The complete pre/post source directory list, file list, file lengths, and per-file SHA-256 values must remain identical.
+- Two Doctor/Baseline copy-set snapshots must be identical before copying, and another must still match before Unity starts.
+- The copy-set pre/post directory list, file list, file lengths, and per-file SHA-256 values must remain identical. Generated, tooling, agent, IDE, and version-control trees excluded from isolation are outside this content proof.
+- The in-project `.git` entry is hashed separately. New paths strictly under `.git/refs/codex/turn-diffs/checkpoints/` are recorded as ambient metadata and do not invalidate unchanged project content.
+- Existing Git metadata may never change or disappear. HEAD, index, config, hooks, ordinary refs, objects, and additions outside the checkpoint namespace remain blocking changes.
 - No module, package, CLI, SDK, certificate bundle, or other dependency is installed.
 - No automatic repair, migration, API update, cleanup, rollback, or success inference is allowed.
 
 ## Doctor schema and migration
 
-Baseline 0.1.1 recognizes two Doctor contracts:
+Baseline 0.1.2 recognizes two Doctor contracts:
 
 | Doctor contract | Static-audit validity | Baseline eligibility |
 | --- | --- | --- |
@@ -135,16 +137,37 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
 
 `ExecutionPolicy Bypass` applies only to that child PowerShell process. The verifier prints exactly one JSON document to stdout; diagnostics use stderr. The same JSON is saved to `artifacts.resultPath`.
 
+## Original integrity model
+
+Baseline 0.1.2 splits two facts that 0.1.1 combined:
+
+| Result object | Scope | Accepted states |
+| --- | --- | --- |
+| `originalProjectIntegrity` | Exact Doctor/Baseline copy set | `UNCHANGED` |
+| `gitMetadataIntegrity` | In-project `.git` entry and descendants | `NOT_PRESENT`, `UNCHANGED`, `AMBIENT_CODEX_CHECKPOINTS_ONLY` |
+
+The content snapshot uses the same exclusion list and canonical file set as Doctor `projectFingerprint`. This prevents Unity-generated or app-owned metadata outside the isolated copy from being misreported as a source-content mutation.
+
+`AMBIENT_CODEX_CHECKPOINTS_ONLY` requires all of the following:
+
+- every file addition is strictly below `.git/refs/codex/turn-diffs/checkpoints/`;
+- added directories are only that namespace, its required parent directories, or descendants;
+- no directory or file was removed;
+- no existing file changed by path, length, or SHA-256;
+- the `.git` root did not appear, disappear, or change filesystem type.
+
+The path classification identifies a reserved namespace; it does not claim which process wrote the entries. Any other Git delta produces `CHANGED` and final status `ORIGINAL_PROJECT_CHANGED`. No cleanup or rollback is attempted.
+
 ## Result contract changes
 
-Baseline result `schemaVersion` is 1.1.0 and `verifierVersion` is 0.1.1. The four final status names are unchanged:
+Baseline result `schemaVersion` remains 1.1.0 and `verifierVersion` is 0.1.2. The four final status names are unchanged:
 
 | finalStatus | Meaning |
 | --- | --- |
 | `BASELINE_VERIFIED` | All required positive compilation, trust, isolation, process-tree, and integrity evidence passed |
 | `BASELINE_FAILED` | Concrete nonzero exit or compiler/fatal log evidence exists |
 | `VERIFICATION_BLOCKED` | Required evidence is invalid, unavailable, unsafe, mismatched, or inconclusive |
-| `ORIGINAL_PROJECT_CHANGED` | The source pre/post directory or file/hash evidence differs |
+| `ORIGINAL_PROJECT_CHANGED` | Copy-set content changed, or Git metadata changed outside the checkpoint-only allowance |
 
 New or expanded evidence is under:
 
@@ -152,7 +175,9 @@ New or expanded evidence is under:
 - `unity.companyName`, `signatureStatus`, `signerSubject`, `certificateThumbprint`, and executable SHA-256;
 - `preflight`;
 - `processControl`;
-- `isolation.localPackageReferences` and `isolation.copyFingerprint`.
+- `isolation.localPackageReferences` and `isolation.copyFingerprint`;
+- `originalProjectIntegrity.scope` and `excludedTopLevelPaths`;
+- separate `gitMetadataIntegrity` snapshots, deltas, allowed prefix, and classification.
 
 Only `verification.scriptCompilation` can become verified. `verification.tests`, `playerBuild`, `playMode`, and `runtime` remain `NOT_VERIFIED`.
 
@@ -165,4 +190,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-v
 
 CI uses plain Windows PowerShell and installs neither Unity nor external packages. The unsigned fake executable is blocked by the production entrypoint. It is invoked only through internal process-control and shared log-analysis functions to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
 
-For the separate signed-editor acceptance procedure, see [Unity Baseline Verification 0.1.1 real-Unity acceptance](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md).
+Regression tests also prove that checkpoint-only additions are accepted while HEAD, index, config, hook, and ordinary-ref changes remain blocking. For the signed-editor rerun criteria, see [Unity Baseline Verification 0.1.2 original-integrity acceptance](../validation/v0.1.2-original-integrity-acceptance.md). The prior [0.1.1 acceptance procedure](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md) remains historical evidence.

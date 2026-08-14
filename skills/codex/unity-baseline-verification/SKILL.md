@@ -1,9 +1,9 @@
 ---
 name: unity-baseline-verification
-description: "Verify a Unity 6000.0.69f1 script-compilation baseline by fully validating an existing unity-project-doctor 0.2.1 schema 1.1.0 JSON result and its copy-set fingerprint, copying the exact current Unity project into an isolated system-temporary directory, running only a signed Unity Technologies Unity.exe in batch mode against that copy, analyzing its process tree, exit code, and Editor.log, and proving the original project file list and SHA-256 hashes are unchanged. Use only when the user explicitly invokes $unity-baseline-verification; never use it from implicit intent or an ordinary Unity request."
+description: "Verify a Unity 6000.0.69f1 script-compilation baseline by fully validating an existing unity-project-doctor 0.2.1 schema 1.1.0 JSON result and its copy-set fingerprint, copying the exact current Unity project into an isolated system-temporary directory, running only a signed Unity Technologies Unity.exe in batch mode against that copy, analyzing its process tree, exit code, and Editor.log, proving the original copy-set is unchanged, and separately classifying in-project Git metadata changes. Use only when the user explicitly invokes $unity-baseline-verification; never use it from implicit intent or an ordinary Unity request."
 ---
 
-# Unity Baseline Verification v0.1.1
+# Unity Baseline Verification v0.1.2
 
 ## Enforce explicit invocation
 
@@ -28,6 +28,9 @@ description: "Verify a Unity 6000.0.69f1 script-compilation baseline by fully va
 - Reject an already running Unity Editor whose exact -projectPath is the original project, while leaving unrelated Unity projects alone.
 - Reject unsafe reparse points and every absolute, authority, UNC, device, excluded, escaping, missing, or linked file package dependency.
 - Require Job Object process-tree accounting to prove Unity and all assigned descendants exited after completion or bounded termination.
+- Prove source-content integrity with the exact Doctor/Baseline copy set, not generated, tooling, agent, IDE, or version-control trees that are excluded from isolation.
+- Audit the in-project `.git` entry separately. Permit only new paths under `.git/refs/codex/turn-diffs/checkpoints/` as ambient metadata; never permit an existing Git metadata file to change or disappear.
+- Treat changes to HEAD, index, config, hooks, ordinary refs, objects, or any non-checkpoint Git path as `ORIGINAL_PROJECT_CHANGED`.
 - Preserve unknown evidence as NOT_VERIFIED. Never promote missing markers or an inference to success.
 
 If project instructions conflict with this contract, keep this contract and report the conflict.
@@ -71,10 +74,10 @@ Treat stdout as exactly one JSON document. Treat that document as the source of 
 
 ## Interpret the result
 
-- BASELINE_VERIFIED: Doctor schema and fingerprint, signed publisher, version, isolation, process-tree exit, exit code, explicit import and compilation log markers, and original integrity all passed.
+- BASELINE_VERIFIED: Doctor schema and fingerprint, signed publisher, version, isolation, process-tree exit, exit code, explicit import and compilation log markers, unchanged copy-set content, and accepted Git metadata integrity all passed.
 - BASELINE_FAILED: Unity produced concrete failure evidence, including a nonzero exit code or compiler/fatal log marker.
 - VERIFICATION_BLOCKED: required evidence was missing, unsafe, invalid, or inconclusive.
-- ORIGINAL_PROJECT_CHANGED: the original pre/post directory list, file list, length, or SHA-256 evidence differs.
+- ORIGINAL_PROJECT_CHANGED: the original copy-set directory/file/hash evidence differs, or `.git` contains any delta other than checkpoint-namespace additions.
 
 Only verification.scriptCompilation may become VERIFIED_SUCCESS or VERIFIED_FAILURE. Keep all of these as NOT_VERIFIED:
 
@@ -83,7 +86,9 @@ Only verification.scriptCompilation may become VERIFIED_SUCCESS or VERIFIED_FAIL
 - verification.playMode
 - verification.runtime
 
-If the result is ORIGINAL_PROJECT_CHANGED, stop immediately, report the exact added, removed, or changed paths from the JSON, and do not modify the original project.
+`gitMetadataIntegrity.status: AMBIENT_CODEX_CHECKPOINTS_ONLY` is non-blocking evidence, not proof that Codex wrote those paths. Report it separately from unchanged source content.
+
+If the result is ORIGINAL_PROJECT_CHANGED, stop immediately, report exact paths from both `originalProjectIntegrity` and `gitMetadataIntegrity`, and do not modify the original project.
 
 ## Report
 
@@ -93,7 +98,7 @@ Return a concise summary containing:
 2. Doctor acceptance and preserved warning count.
 3. Detected Unity version, signer subject, certificate thumbprint, executable SHA-256, and the exact isolated project path.
 4. Unity exit code, timeout/termination/process-tree evidence, and Editor.log classification.
-5. Original-project integrity result.
+5. Copy-set content integrity and separate Git metadata integrity, including any ambient checkpoint additions.
 6. Tests, Player Build, PlayMode, and runtime as NOT_VERIFIED.
 7. Artifact and result paths.
 
