@@ -1,176 +1,168 @@
-# Unity Baseline Verification
+# Unity Baseline Verification 0.1.1
 
-Unity Baseline Verification is an explicit-only Codex Skill in the Unity Agent Pipeline monorepo. Version 0.1.0 verifies a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. It consumes an existing unity-project-doctor v0.2 JSON document, makes a guarded temporary copy, runs only the supplied Unity.exe against that copy, analyzes the process and Editor.log, and proves the original tree is unchanged.
+Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. It fully validates Doctor evidence, binds that evidence to current content, copies only the approved file set to an external temporary session, and runs only a trusted Unity.exe against that copy.
 
-The Skill never runs tests, PlayMode, a Player Build, or runtime behavior.
+Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
+
+## Invocation and scope
+
+- The literal name `$unity-baseline-verification` is required.
+- `policy.allow_implicit_invocation` is `false`.
+- The Skill does not invoke `$unity-project-doctor` implicitly.
+- It performs import and script-compilation evidence collection only.
+- It never runs tests, a Player Build, PlayMode, scenes, players, or runtime behavior.
 
 ## Safety contract
 
-- Invocation requires the literal Skill name $unity-baseline-verification.
-- unity-project-doctor v0.2 JSON schema 1.0.0 is required before Unity can start.
-- Only Unity 6000.0.69f1 is accepted.
-- Unity.exe receives the isolated project path; the original path is rejected from its argument list.
-- Unity Hub is never launched by the verifier.
-- Logs, captured streams, the copied project, and the JSON result are created under a unique external temporary session.
-- The original directory list, file list, file lengths, and per-file SHA-256 hashes are captured before and after the isolated run.
-- Reparse points and local file package dependencies that escape the project are rejected.
-- Library, Temp, Obj, Logs, Build, Builds, UserSettings, version-control metadata, IDE state, and project-local agent metadata are not copied.
-- No external PowerShell module, package, CLI, SDK, test framework, or other dependency is installed.
-- No API update, automatic repair, migration, cleanup, build, test, PlayMode, or runtime command is requested.
-- Missing positive evidence remains NOT_VERIFIED and can never be inferred as success.
+- The original project is read-only and is never passed to Unity.
+- Unity Hub is never started. The verifier starts only the supplied `Unity.exe`.
+- Logs, captured streams, result JSON, the Job Object session, and the copied project stay outside the source project.
+- The source root, Doctor JSON, Unity.exe, artifact root, and copy-included package paths must not traverse reparse points.
+- The exact source project must not already be open through a running `Unity.exe -projectPath` argument. Unrelated Unity projects are not blocked.
+- Two complete source snapshots must be identical before copying, and another must still match before Unity starts.
+- The complete pre/post source directory list, file list, file lengths, and per-file SHA-256 values must remain identical.
+- No module, package, CLI, SDK, certificate bundle, or other dependency is installed.
+- No automatic repair, migration, API update, cleanup, rollback, or success inference is allowed.
 
-The isolated project and evidence are intentionally retained outside the original project for inspection.
+## Doctor schema and migration
 
-## Repository layout
+Baseline 0.1.1 recognizes two Doctor contracts:
 
-~~~text
-unity_agent_pipeline/
-├── .github/workflows/baseline-static-tests.yml
-├── docs/skills/unity-baseline-verification.md
-├── scripts/install-codex-skills.ps1
-├── skills/codex/unity-baseline-verification/
-│   ├── VERSION
-│   ├── SKILL.md
-│   ├── agents/openai.yaml
-│   └── scripts/verify-unity-baseline.ps1
-└── tests/unity-baseline-verification/run-tests.ps1
-~~~
+| Doctor contract | Static-audit validity | Baseline eligibility |
+| --- | --- | --- |
+| schema 1.0.0 / scanner 0.2.0 | Still valid under `schemas/unity-project-audit.schema.json` | Blocked because it has no copy-set fingerprint |
+| schema 1.1.0 / scanner 0.2.1 | Valid under `schemas/unity-project-audit-1.1.0.schema.json` | Eligible after semantic and fingerprint checks |
 
-## Prerequisites
+The frozen 1.0.0 schema was not edited or redefined. Schema 1.1.0 is a separate file and reuses the frozen definitions through local `$ref` resolution.
 
-- Windows PowerShell 5.1 or newer
-- A Unity project whose ProjectSettings/ProjectVersion.txt identifies 6000.0.69f1
-- The exact Unity 6000.0.69f1 Unity.exe
-- An existing unity-project-doctor 0.2.0 JSON result for the same absolute project root
+Before any Unity process can start, the production verifier checks the entire selected schema. Its no-module validator deterministically supports the keywords used by these contracts:
 
-The verifier follows Unity 6 command-line behavior for -projectPath, -batchmode, -nographics, -quit, -logFile, and -upmLogFile:
+- `$ref`
+- `type`
+- `required`
+- `const`
+- `enum`
+- `pattern`
+- `minLength` and `maxLength`
+- `minItems`
+- `items`
+- `additionalProperties`
 
-https://docs.unity3d.com/6000.0/Documentation/Manual/EditorCommandLineArguments.html
+Nested enum/type errors, missing nested fields, and extra properties produce structured errors with exact paths such as `$.git.metadataStatus`. Schema success evidence is emitted only after full validation.
 
-## Doctor v0.2 compatibility
+Schema-valid Doctor 1.1.0 input must also satisfy:
 
-The consumer requires:
+- `projectRoot` exactly equals the normalized source root.
+- The root is a Unity project and its parsed editor version is 6000.0.69f1.
+- `finalStatus` is `STATIC_AUDIT_COMPLETE` or `STATIC_AUDIT_COMPLETE_WITH_WARNINGS`.
+- `blockedChecks` is empty and static evidence is non-empty.
+- Doctor compilation, tests, build, and runtime remain `NOT_VERIFIED`.
+- `projectFingerprint.status` is `COMPUTED`, uses contract 1.0.0, and records two stable passes.
+- The current copy-included source fingerprint exactly matches the Doctor fingerprint.
 
-| Field | Required value |
-| --- | --- |
-| schemaVersion | 1.0.0 |
-| scannerVersion | 0.2.0 |
-| projectRoot | Exact normalized original project root |
-| projectDetection.isUnityProject | true |
-| projectDetection.rootStatus | UNITY_PROJECT |
-| unityEditorVersion.parseStatus | PARSED |
-| unityEditorVersion.editorVersion | 6000.0.69f1 |
-| finalStatus | STATIC_AUDIT_COMPLETE or STATIC_AUDIT_COMPLETE_WITH_WARNINGS |
-| blockedChecks | Empty |
-| dynamicVerification.*.status | NOT_VERIFIED |
-| evidence | Non-empty |
+Warnings remain warnings and are preserved in the result.
 
-Doctor warnings are preserved in the baseline result and do not become success evidence. AUDIT_BLOCKED and NOT_A_UNITY_PROJECT stop before any Unity process.
+## Fingerprint contract
 
-The Doctor JSON SHA-256 is included in the output so the exact preflight document remains traceable.
+The Doctor and Baseline use the same implementation. It fingerprints exactly the paths Baseline copies, excluding generated, tooling, version-control, IDE, and agent trees.
 
-## Install the global Skill
+Entries are ordered with ordinal relative-path ordering. Canonical records contain:
 
-Preview the symbolic-link install:
+- directory relative path and its UTF-8 byte length;
+- file relative path and its UTF-8 byte length;
+- file length;
+- lowercase file SHA-256;
+- LF record separators.
 
-~~~powershell
-cd E:\Playground\Pipelines\unity_agent_pipeline
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-codex-skills.ps1 -WhatIf
-~~~
+The contract identifier is `unity-copy-set-relative-path-length-sha256-lf-v1`. No fingerprint file or cache is written in the source project. Baseline recomputes the fingerprint from the source and the isolated copy; any mismatch blocks before Unity.
 
-Install into the default user-wide .agents/skills directory:
+## Local `file:` package isolation
 
-~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-codex-skills.ps1
-~~~
+Every `Packages/manifest.json` dependency beginning with `file:` must be a relative reference that resolves to a copy-included path under the project root.
 
-The installer is conflict-safe and idempotent. It never replaces a directory, file, dangling link, or link to another source.
+The verifier blocks:
 
-## Invoke from Codex
+- absolute references, including absolute paths still inside the project;
+- UNC, URI authority, drive, and Windows device syntax;
+- single- or multi-percent-encoded escape paths;
+- relative paths that escape the project;
+- generated or otherwise excluded top-level trees;
+- missing targets;
+- junctions, symlinks, or other reparse traversal.
 
-The Skill has policy.allow_implicit_invocation set to false. Invoke it by name and provide an existing Doctor JSON path:
+Safe references are normalized at the source and isolated manifests. The normalized relative path must be identical, the isolated target must exist with the same filesystem type, and the source and isolated absolute paths must differ.
 
-~~~text
-$unity-baseline-verification Verify the current Unity project with Doctor JSON C:\Temp\doctor.json and Unity.exe C:\Program Files\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe.
-~~~
+## Unity.exe trust
 
-If Doctor JSON does not exist, explicitly invoke $unity-project-doctor first. Unity Baseline Verification does not implicitly invoke that separate Skill.
+The production entrypoint requires all of the following:
 
-## Run the verifier directly
+- filename `Unity.exe` outside the source project;
+- no reparse traversal;
+- ProductVersion identifying exactly 6000.0.69f1;
+- `Get-AuthenticodeSignature` status `Valid`;
+- a signer subject identifying Unity Technologies.
+
+The result records FileVersion, ProductVersion, CompanyName, signer subject, certificate thumbprint, and executable SHA-256. Thumbprints are evidence for the inspected binary, not a permanent single-certificate pin. There is no `SkipSignatureCheck`, `TestMode`, or equivalent production bypass.
+
+## Process-tree control and log evidence
+
+Unity is created with `CREATE_SUSPENDED`, assigned to a Windows Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, and resumed only after assignment succeeds. This closes the start-to-assignment window in which an early child could otherwise escape process-tree control. After normal root-process exit, Job Object accounting must report zero active processes. On timeout or lingering descendants, the verifier terminates the Job Object and waits a bounded interval for zero active processes. Failure to prove tree exit blocks verification.
+
+The result includes:
+
+- Job Object creation/configuration/assignment;
+- root process ID and exit state;
+- timeout and termination reason;
+- termination API result;
+- final active-process count;
+- bounded wait duration and tree-exit proof.
+
+`BASELINE_VERIFIED` additionally requires process exit code 0 and explicit Editor.log evidence for the exact Unity version, batch mode, isolated project path, initial AssetDatabase refresh, `CompileScripts`, domain reload, successful batch-mode shutdown, and logged return code 0. Missing markers are inconclusive, never inferred success.
+
+## Direct invocation
+
+Generate Doctor JSON outside the project first, then run:
 
 ~~~powershell
 $verifier = "E:\Playground\Pipelines\unity_agent_pipeline\skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
 $unity = "C:\Program Files\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier -ProjectRoot "E:\Unity\ExampleProject" -DoctorResultPath "C:\Temp\doctor.json" -UnityExecutable $unity -Pretty
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
+  -ProjectRoot "E:\Unity\ExampleProject" `
+  -DoctorResultPath "C:\Temp\doctor-1.1.0.json" `
+  -UnityExecutable $unity `
+  -Pretty
 ~~~
 
-Parameters:
+`ExecutionPolicy Bypass` applies only to that child PowerShell process. The verifier prints exactly one JSON document to stdout; diagnostics use stderr. The same JSON is saved to `artifacts.resultPath`.
 
-| Parameter | Meaning |
-| --- | --- |
-| ProjectRoot | Exact original Unity project; defaults to the current directory |
-| DoctorResultPath | Existing Doctor 0.2.0 JSON file outside the project |
-| UnityExecutable | Exact Unity 6000.0.69f1 Unity.exe |
-| ArtifactsRoot | External parent for a unique session; defaults to the system temporary directory |
-| TimeoutSeconds | Unity process timeout; defaults to 1800 |
-| Pretty | Pretty-print the one JSON stdout document |
+## Result contract changes
 
-Normal stdout is exactly one JSON document. The same JSON is written to artifacts.resultPath. Unity stdout, stderr, Editor.log, and UPM output remain under the external session.
-
-## Unity evidence rules
-
-BASELINE_VERIFIED requires all of these concrete facts:
-
-- Unity.exe ProductVersion identifies 6000.0.69f1.
-- Current ProjectVersion.txt identifies 6000.0.69f1.
-- Editor.log identifies 6000.0.69f1.
-- Editor.log records BatchMode: 1.
-- Editor.log records the exact isolated project path.
-- Editor.log records Application.AssetDatabase Initial Refresh End.
-- Editor.log records the CompileScripts phase and a completed domain reload.
-- Editor.log records successful batch-mode shutdown and return code 0.
-- The actual process exit code is 0.
-- No compiler, fatal, crash, package-resolution, or nonzero-return marker is present.
-- The original pre/post tree evidence is identical.
-
-If any positive marker is missing, the result is not promoted to success. Compiler errors and other concrete failures produce BASELINE_FAILED. Unsafe or inconclusive evidence produces VERIFICATION_BLOCKED.
-
-## Result statuses
+Baseline result `schemaVersion` is 1.1.0 and `verifierVersion` is 0.1.1. The four final status names are unchanged:
 
 | finalStatus | Meaning |
 | --- | --- |
-| BASELINE_VERIFIED | Compilation evidence and original integrity both passed |
-| BASELINE_FAILED | Concrete Unity exit or log failure evidence exists |
-| VERIFICATION_BLOCKED | Required evidence is invalid, unsafe, unavailable, or inconclusive |
-| ORIGINAL_PROJECT_CHANGED | Original directory or file hash evidence differs |
+| `BASELINE_VERIFIED` | All required positive compilation, trust, isolation, process-tree, and integrity evidence passed |
+| `BASELINE_FAILED` | Concrete nonzero exit or compiler/fatal log evidence exists |
+| `VERIFICATION_BLOCKED` | Required evidence is invalid, unavailable, unsafe, mismatched, or inconclusive |
+| `ORIGINAL_PROJECT_CHANGED` | The source pre/post directory or file/hash evidence differs |
 
-Only verification.scriptCompilation can be verified. These always remain NOT_VERIFIED in v0.1:
+New or expanded evidence is under:
 
-- verification.tests
-- verification.playerBuild
-- verification.playMode
-- verification.runtime
+- `doctor.schemaPath`, `schemaValidated`, `validationErrors`, `projectFingerprint`, `currentProjectFingerprint`, and `fingerprintMatched`;
+- `unity.companyName`, `signatureStatus`, `signerSubject`, `certificateThumbprint`, and executable SHA-256;
+- `preflight`;
+- `processControl`;
+- `isolation.localPackageReferences` and `isolation.copyFingerprint`.
 
-## Tests
+Only `verification.scriptCompilation` can become verified. `verification.tests`, `playerBuild`, `playMode`, and `runtime` remain `NOT_VERIFIED`.
+
+## Static and fake tests
 
 ~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1
 ~~~
 
-Tests compile a small fake Unity.exe with the Windows PowerShell built-in C# compiler. No Unity installation or external module is used. The fake executable validates argument forwarding and produces controlled Editor.log and exit-code cases.
+CI uses plain Windows PowerShell and installs neither Unity nor external packages. The unsigned fake executable is blocked by the production entrypoint. It is invoked only through internal process-control and shared log-analysis functions to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
 
-Coverage includes:
-
-- accepted and rejected Doctor v0.2 contracts
-- exact Unity executable version checks
-- success, compiler failure, nonzero exit, missing log, and inconclusive log classification
-- isolated -projectPath and external log arguments
-- absence of tests, builds, PlayMode, runtime, API updates, and compiler-error bypass arguments
-- source-copy exclusions
-- original-project unchanged evidence
-- deliberate original mutation detection
-- stdout-only JSON behavior
-- installer WhatIf, idempotency, and conflict preservation
-- PowerShell parsing and Skill metadata policy
-
-GitHub Actions runs only these fake-Unity and static tests on windows-latest. It does not install or run Unity.
+For the separate signed-editor acceptance procedure, see [Unity Baseline Verification 0.1.1 real-Unity acceptance](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md).

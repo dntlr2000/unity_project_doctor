@@ -3,7 +3,7 @@ name: unity-project-doctor
 description: "Perform a deterministic, read-only static audit of the Unity project in the current working directory. Prefer the bundled PowerShell scanner to inspect the Unity root and version, Git state, package manifests, assembly definitions, test assemblies, Build Settings scenes, AGENTS.md files, project-local skills, tracked generated folders, and the evidence status of compilation, tests, builds, and runtime behavior. Use only when the user explicitly invokes $unity-project-doctor; never use it from implicit intent or an ordinary Unity question."
 ---
 
-# Unity Project Doctor v0.2
+# Unity Project Doctor v0.2.1
 
 ## Enforce the operating contract
 
@@ -38,7 +38,9 @@ Apply ExecutionPolicy Bypass only to that child process. Do not change machine o
 Treat the scanner's valid JSON stdout as the source of truth:
 
 - Require one JSON document and no human-readable stdout prefix or suffix.
-- For this v0.2 Skill, require schemaVersion to be exactly 1.0.0 before interpreting fields.
+- For scanner 0.2.1 output, require schemaVersion 1.1.0 before interpreting fields.
+- Validate projectFingerprint as the stable SHA-256 binding for exactly the non-generated file set copied by Unity Baseline Verification.
+- Keep the frozen schemaVersion 1.0.0 file as the compatibility contract for saved scanner 0.2.0 results; do not reinterpret those fingerprintless results as schema 1.1.0.
 - If schemaVersion is absent or unknown, preserve the raw value, do not guess the contract, and report AUDIT_BLOCKED for the Skill-level report.
 - Keep schemaVersion, scannerVersion, evidence, warnings, blocked checks, verification states, and finalStatus unchanged.
 - Do not delete findings, reinterpret a warning as success, or promote the scanner's final status.
@@ -48,6 +50,8 @@ Treat the scanner's valid JSON stdout as the source of truth:
 - Treat stderr as diagnostic context, not audit evidence unless the JSON records the same failure.
 
 Use the manual fallback below only when the bundled scanner is absent, the PowerShell process cannot start, exits without a valid JSON document, or cannot be executed in the environment. State that deterministic scanning was unavailable and retain the failure as a warning or blocker. A manual fallback result must never be STATIC_AUDIT_COMPLETE; its best possible result is STATIC_AUDIT_COMPLETE_WITH_WARNINGS. Use AUDIT_BLOCKED when the scanner failure or another concrete failure prevents a meaningful audit.
+
+A manual fallback cannot create schema 1.1.0 projectFingerprint evidence and therefore cannot satisfy Unity Baseline Verification v0.1.1.
 
 Do not run the scanner from inside the audited project when it was copied there. Run only the bundled scanner resolved from this installed Skill.
 

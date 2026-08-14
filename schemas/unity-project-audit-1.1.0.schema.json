@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/dntlr2000/unity_agent_pipeline/v0.2.1/schemas/unity-project-audit-1.1.0.schema.json",
+  "title": "Unity Project Doctor static audit with copy-set fingerprint",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "scannerVersion",
+    "projectRoot",
+    "projectDetection",
+    "unityEditorVersion",
+    "git",
+    "packages",
+    "assemblies",
+    "buildSettings",
+    "agentsFiles",
+    "projectSkills",
+    "trackedGeneratedFolderPaths",
+    "projectFingerprint",
+    "warnings",
+    "blockedChecks",
+    "dynamicVerification",
+    "finalStatus",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": "1.1.0",
+      "description": "The audit JSON compatibility contract version."
+    },
+    "scannerVersion": {
+      "$ref": "unity-project-audit.schema.json#/properties/scannerVersion"
+    },
+    "projectRoot": {
+      "$ref": "unity-project-audit.schema.json#/properties/projectRoot"
+    },
+    "projectDetection": {
+      "$ref": "unity-project-audit.schema.json#/properties/projectDetection"
+    },
+    "unityEditorVersion": {
+      "$ref": "unity-project-audit.schema.json#/properties/unityEditorVersion"
+    },
+    "git": {
+      "$ref": "unity-project-audit.schema.json#/properties/git"
+    },
+    "packages": {
+      "$ref": "unity-project-audit.schema.json#/properties/packages"
+    },
+    "assemblies": {
+      "$ref": "unity-project-audit.schema.json#/properties/assemblies"
+    },
+    "buildSettings": {
+      "$ref": "unity-project-audit.schema.json#/properties/buildSettings"
+    },
+    "agentsFiles": {
+      "$ref": "unity-project-audit.schema.json#/properties/agentsFiles"
+    },
+    "projectSkills": {
+      "$ref": "unity-project-audit.schema.json#/properties/projectSkills"
+    },
+    "trackedGeneratedFolderPaths": {
+      "$ref": "unity-project-audit.schema.json#/properties/trackedGeneratedFolderPaths"
+    },
+    "projectFingerprint": {
+      "$ref": "#/$defs/projectFingerprint"
+    },
+    "warnings": {
+      "$ref": "unity-project-audit.schema.json#/properties/warnings"
+    },
+    "blockedChecks": {
+      "$ref": "unity-project-audit.schema.json#/properties/blockedChecks"
+    },
+    "dynamicVerification": {
+      "$ref": "unity-project-audit.schema.json#/properties/dynamicVerification"
+    },
+    "finalStatus": {
+      "$ref": "unity-project-audit.schema.json#/properties/finalStatus"
+    },
+    "evidence": {
+      "$ref": "unity-project-audit.schema.json#/properties/evidence"
+    }
+  },
+  "$defs": {
+    "projectFingerprint": {
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "status",
+        "algorithm",
+        "canonicalization",
+        "excludedTopLevelPaths",
+        "directoryCount",
+        "fileCount",
+        "treeSha256",
+        "stabilityPasses",
+        "error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "contractVersion": {
+          "const": "1.0.0"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "COMPUTED",
+            "BLOCKED",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "algorithm": {
+          "const": "SHA-256"
+        },
+        "canonicalization": {
+          "const": "unity-copy-set-relative-path-length-sha256-lf-v1"
+        },
+        "excludedTopLevelPaths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "directoryCount": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fileCount": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "treeSha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "stabilityPasses": {
+          "type": "integer"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 2048
+        }
+      }
+    }
+  }
+}

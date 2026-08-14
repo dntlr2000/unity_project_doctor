@@ -28,11 +28,17 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$script:SchemaVersion = "1.0.0"
-$script:VerifierVersion = "0.1.0"
-$script:ExpectedDoctorSchemaVersion = "1.0.0"
-$script:ExpectedDoctorScannerVersion = "0.2.0"
+$script:SchemaVersion = "1.1.0"
+$script:VerifierVersion = "0.1.1"
+$script:ExpectedDoctorSchemaVersion = "1.1.0"
+$script:ExpectedDoctorScannerVersion = "0.2.1"
+$script:LegacyDoctorSchemaVersion = "1.0.0"
 $script:ExpectedUnityVersion = "6000.0.69f1"
+$script:ValidatorLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\json-schema-validator.ps1"
+$script:ProcessLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-process-job.ps1"
+$script:EditorLogLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-editor-log.ps1"
+$script:CodexSkillsRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$script:FingerprintLibraryPath = Join-Path -Path $script:CodexSkillsRoot -ChildPath "unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
 $script:IsWindowsPlatform = $env:OS -eq "Windows_NT"
 $script:PathComparison = if ($script:IsWindowsPlatform) {
     [System.StringComparison]::OrdinalIgnoreCase
@@ -45,20 +51,8 @@ $script:PathComparer = if ($script:IsWindowsPlatform) {
     [System.StringComparer]::Ordinal
 }
 $script:ExcludedTopLevelNames = @(
-    ".agents",
-    ".codex",
-    ".git",
-    ".hg",
-    ".idea",
-    ".svn",
-    ".vs",
-    "Build",
-    "Builds",
-    "Library",
-    "Logs",
-    "Obj",
-    "Temp",
-    "UserSettings"
+    ".agents", ".codex", ".git", ".hg", ".idea", ".svn", ".vs",
+    "Build", "Builds", "Library", "Logs", "Obj", "Temp", "UserSettings"
 )
 $script:ExcludedTopLevelLookup = @{}
 foreach ($excludedName in $script:ExcludedTopLevelNames) {
@@ -85,6 +79,7 @@ function New-VerificationResult {
         doctor = [ordered]@{
             sourcePath = $null
             sha256 = $null
+            schemaPath = $null
             schemaVersion = $null
             scannerVersion = $null
             projectRoot = $null
@@ -92,6 +87,10 @@ function New-VerificationResult {
             warningCount = 0
             warnings = @()
             validationErrors = @()
+            schemaValidated = $false
+            fingerprintMatched = $false
+            projectFingerprint = $null
+            currentProjectFingerprint = $null
             accepted = $false
         }
         unity = [ordered]@{
@@ -99,8 +98,13 @@ function New-VerificationResult {
             executableSha256 = $null
             fileVersion = $null
             productVersion = $null
+            companyName = $null
             detectedExecutableVersion = $null
             executableVersionMatched = $false
+            signatureStatus = $null
+            signerSubject = $null
+            certificateThumbprint = $null
+            publisherMatched = $false
             projectVersion = $null
             arguments = @()
             commandLineContainsOriginalProject = $null
@@ -111,6 +115,28 @@ function New-VerificationResult {
             standardErrorPath = $null
             hubInvoked = $false
         }
+        processControl = [ordered]@{
+            rootProcessId = $null
+            jobObjectCreated = $false
+            killOnJobCloseConfigured = $false
+            processAssignedToJob = $false
+            terminationRequested = $false
+            terminationReason = $null
+            terminationApiSucceeded = $null
+            rootProcessExited = $false
+            processTreeExitVerified = $false
+            activeProcessCountAfterWait = $null
+            treeExitWaitMilliseconds = 0
+            controlError = $null
+        }
+        preflight = [ordered]@{
+            sourceEditorCheckCompleted = $false
+            sourceEditorProcessIds = @()
+            sourceEditorDetected = $null
+            sourceSnapshotStable = $false
+            artifactRootOutsideProject = $false
+            trustedPathsWithoutReparse = $false
+        }
         isolation = [ordered]@{
             artifactsRoot = $null
             sessionRoot = $null
@@ -119,6 +145,8 @@ function New-VerificationResult {
             copiedDirectoryCount = 0
             copiedFileCount = 0
             excludedTopLevelPaths = @($script:ExcludedTopLevelNames)
+            localPackageReferences = @()
+            copyFingerprint = $null
             originalProjectPassedToUnity = $null
         }
         artifacts = [ordered]@{
@@ -216,6 +244,54 @@ function Get-NormalizedAbsolutePath {
     return $fullPath.TrimEnd($trimCharacters)
 }
 
+# Resolves one canonical repository schema from source or an installed Skill symlink target.
+function Resolve-DoctorSchemaPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SchemaVersion
+    )
+
+    $fileName = switch ($SchemaVersion) {
+        "1.0.0" { "unity-project-audit.schema.json" }
+        "1.1.0" { "unity-project-audit-1.1.0.schema.json" }
+        default { throw "No Doctor schema is registered for schemaVersion $SchemaVersion." }
+    }
+
+    $searchStarts = New-Object System.Collections.ArrayList
+    [void]$searchStarts.Add($PSScriptRoot)
+    $skillRoot = Split-Path -Parent $PSScriptRoot
+    try {
+        $skillEntry = Get-Item -LiteralPath $skillRoot -Force -ErrorAction Stop
+        foreach ($target in @($skillEntry.Target)) {
+            if ([string]::IsNullOrWhiteSpace([string]$target)) {
+                continue
+            }
+            $targetPath = [string]$target
+            if (-not [System.IO.Path]::IsPathRooted($targetPath)) {
+                $targetPath = Join-Path -Path $skillEntry.Parent.FullName -ChildPath $targetPath
+            }
+            [void]$searchStarts.Add((Get-NormalizedAbsolutePath -Path $targetPath))
+        }
+    } catch {
+    }
+
+    foreach ($searchStart in @($searchStarts)) {
+        $current = Get-NormalizedAbsolutePath -Path ([string]$searchStart)
+        for ($depth = 0; $depth -le 8; $depth++) {
+            $candidate = Join-Path -Path $current -ChildPath ("schemas\" + $fileName)
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                return Get-NormalizedAbsolutePath -Path $candidate
+            }
+            $parent = [System.IO.Directory]::GetParent($current)
+            if ($null -eq $parent -or $parent.FullName.Equals($current, $script:PathComparison)) {
+                break
+            }
+            $current = $parent.FullName
+        }
+    }
+    throw "Canonical Doctor schema was not found: $fileName"
+}
+
 # Tests whether one normalized path is equal to or below another path.
 function Test-PathWithinRoot {
     param(
@@ -267,6 +343,115 @@ function Get-PathKey {
     }
 
     return $Path
+}
+
+# Parses a Windows command line into argument tokens for exact project-path comparison.
+function ConvertFrom-WindowsProcessCommandLine {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$CommandLine
+    )
+
+    $arguments = New-Object 'System.Collections.Generic.List[string]'
+    $length = $CommandLine.Length
+    $index = 0
+    while ($index -lt $length) {
+        while ($index -lt $length -and [char]::IsWhiteSpace($CommandLine[$index])) {
+            $index++
+        }
+        if ($index -ge $length) {
+            break
+        }
+
+        $builder = New-Object System.Text.StringBuilder
+        $insideQuotes = $false
+        while ($index -lt $length) {
+            $backslashCount = 0
+            while ($index -lt $length -and $CommandLine[$index] -eq '\') {
+                $backslashCount++
+                $index++
+            }
+            if ($index -lt $length -and $CommandLine[$index] -eq '"') {
+                [void]$builder.Append(('\' * [int]($backslashCount / 2)))
+                if (($backslashCount % 2) -eq 0) {
+                    $insideQuotes = -not $insideQuotes
+                } else {
+                    [void]$builder.Append('"')
+                }
+                $index++
+                continue
+            }
+            if ($backslashCount -gt 0) {
+                [void]$builder.Append(('\' * $backslashCount))
+            }
+            if ($index -ge $length -or (-not $insideQuotes -and [char]::IsWhiteSpace($CommandLine[$index]))) {
+                break
+            }
+            [void]$builder.Append($CommandLine[$index])
+            $index++
+        }
+        $arguments.Add($builder.ToString())
+    }
+    return [string[]]$arguments.ToArray()
+}
+
+# Finds only running Unity Editor processes whose -projectPath equals the source project.
+function Get-SourceProjectUnityProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceProjectRoot
+    )
+
+    if (-not $script:IsWindowsPlatform) {
+        throw 'Unity process preflight requires Windows.'
+    }
+
+    $matches = New-Object System.Collections.ArrayList
+    $unityProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'Unity.exe'" -ErrorAction Stop)
+    foreach ($unityProcess in $unityProcesses) {
+        if ([string]::IsNullOrWhiteSpace([string]$unityProcess.CommandLine)) {
+            continue
+        }
+        $arguments = @(ConvertFrom-WindowsProcessCommandLine -CommandLine ([string]$unityProcess.CommandLine))
+        for ($argumentIndex = 0; $argumentIndex + 1 -lt $arguments.Count; $argumentIndex++) {
+            if (-not [string]::Equals($arguments[$argumentIndex], '-projectPath', [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+            try {
+                $observedProjectPath = Get-NormalizedAbsolutePath -Path $arguments[$argumentIndex + 1]
+                if ($observedProjectPath.Equals($SourceProjectRoot, $script:PathComparison)) {
+                    [void]$matches.Add([pscustomobject][ordered]@{
+                        processId = [int]$unityProcess.ProcessId
+                        executablePath = $unityProcess.ExecutablePath
+                        projectPath = $observedProjectPath
+                    })
+                }
+            } catch {
+            }
+            break
+        }
+    }
+    return @($matches)
+}
+
+# Blocks only when a running Unity Editor is associated with the exact source project path.
+function Test-SourceProjectEditorPreflight {
+    try {
+        $matches = @(Get-SourceProjectUnityProcesses -SourceProjectRoot $script:NormalizedProjectRoot)
+        $script:Result.preflight.sourceEditorCheckCompleted = $true
+        $script:Result.preflight.sourceEditorProcessIds = @($matches | ForEach-Object { $_.processId })
+        $script:Result.preflight.sourceEditorDetected = $matches.Count -gt 0
+        if ($matches.Count -gt 0) {
+            Add-Blocker -Code "SOURCE_PROJECT_OPEN_IN_UNITY" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "The exact source project is already associated with running Unity process ID(s): $([string]::Join(', ', [string[]]@($script:Result.preflight.sourceEditorProcessIds)))."
+        } else {
+            Add-Evidence -Check "sourceEditorPreflight" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "No running Unity.exe -projectPath argument matched the exact source project; unrelated Unity projects were not blocked."
+        }
+    } catch {
+        $script:Result.preflight.sourceEditorCheckCompleted = $false
+        $script:Result.preflight.sourceEditorDetected = $null
+        Add-Blocker -Code "SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "Running Unity process association could not be inspected safely: $($_.Exception.Message)"
+    }
 }
 
 # Finds the first existing reparse point on a path or its existing ancestors.
@@ -409,14 +594,29 @@ function Add-DoctorValidationError {
         [string]$Code,
 
         [Parameter(Mandatory = $true)]
-        [string]$Message
+        [string]$Message,
+
+        [Parameter()]
+        [AllowNull()]
+        [string]$JsonPath,
+
+        [Parameter()]
+        [AllowNull()]
+        [string]$Keyword
     )
 
     [void]$script:DoctorValidationErrors.Add([ordered]@{
         code = $Code
+        path = $JsonPath
+        keyword = $Keyword
         message = $Message
     })
-    Add-Blocker -Code $Code -Check "doctor" -Path $script:Result.doctor.sourcePath -Message $Message
+    $blockerPath = if ([string]::IsNullOrWhiteSpace($JsonPath)) {
+        $script:Result.doctor.sourcePath
+    } else {
+        $JsonPath
+    }
+    Add-Blocker -Code $Code -Check "doctor" -Path $blockerPath -Message $Message
 }
 
 # Calculates a lowercase SHA-256 digest for a file with read-only sharing.
@@ -742,9 +942,74 @@ function Copy-ProjectToIsolation {
     }
 }
 
-# Validates local file package references so Unity cannot escape the isolated project.
+# Decodes a file-package path repeatedly so percent-encoded escape syntax cannot bypass checks.
+function ConvertFrom-LocalPackagePathEncoding {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$RawPath
+    )
+
+    $decoded = $RawPath
+    for ($pass = 0; $pass -lt 4; $pass++) {
+        $next = [System.Uri]::UnescapeDataString($decoded)
+        if ($next -eq $decoded) {
+            return $decoded
+        }
+        $decoded = $next
+    }
+    if ($decoded -match '%[0-9A-Fa-f]{2}') {
+        throw "Local package path remains percent-encoded after the decode safety limit."
+    }
+    return $decoded
+}
+
+# Tests syntax that denotes an absolute, authority, UNC, or Windows device path.
+function Get-ForbiddenLocalPackagePathKind {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    $windowsPath = $Path.Replace('/', '\')
+    if (
+        $windowsPath.StartsWith('\\?\', [System.StringComparison]::Ordinal) -or
+        $windowsPath.StartsWith('\\.\', [System.StringComparison]::Ordinal) -or
+        $windowsPath.StartsWith('\??\', [System.StringComparison]::Ordinal)
+    ) {
+        return 'DEVICE'
+    }
+    if ($Path.StartsWith('//', [System.StringComparison]::Ordinal) -or $windowsPath.StartsWith('\\', [System.StringComparison]::Ordinal)) {
+        return 'AUTHORITY_OR_UNC'
+    }
+    if (
+        $Path.StartsWith('/', [System.StringComparison]::Ordinal) -or
+        $windowsPath.StartsWith('\', [System.StringComparison]::Ordinal) -or
+        [System.IO.Path]::IsPathRooted($windowsPath) -or
+        $windowsPath -match '^[A-Za-z]:'
+    ) {
+        return 'ABSOLUTE'
+    }
+    if ($windowsPath -match '^[^\\]+:') {
+        return 'URI_SCHEME'
+    }
+    return $null
+}
+
+# Validates local file package references in the source and, after copying, in isolation.
 function Test-LocalPackageDependencySafety {
-    $manifestPath = Join-Path -Path $script:NormalizedProjectRoot -ChildPath "Packages\manifest.json"
+    param(
+        [Parameter()]
+        [switch]$ValidateIsolatedCopy
+    )
+
+    $projectForManifest = if ($ValidateIsolatedCopy) {
+        $script:Result.isolation.projectCopyPath
+    } else {
+        $script:NormalizedProjectRoot
+    }
+    $manifestPath = Join-Path -Path $projectForManifest -ChildPath "Packages\manifest.json"
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
         Add-Blocker -Code "PACKAGE_MANIFEST_MISSING" -Check "isolation" -Path "Packages/manifest.json" -Message "Packages/manifest.json is required before an isolated Unity import."
         return
@@ -759,10 +1024,19 @@ function Test-LocalPackageDependencySafety {
 
     $dependencies = Get-JsonPropertyValue -InputObject $manifest -Name "dependencies"
     if ($null -eq $dependencies) {
+        if (-not $ValidateIsolatedCopy) {
+            $script:Result.isolation.localPackageReferences = @()
+        }
+        return
+    }
+
+    if ($dependencies -isnot [pscustomobject] -and $dependencies -isnot [System.Collections.IDictionary]) {
+        Add-Blocker -Code "PACKAGE_DEPENDENCIES_INVALID" -Check "isolation" -Path "Packages/manifest.json" -Message "manifest dependencies must be a JSON object before local references can be checked."
         return
     }
 
     $manifestDirectory = Split-Path -Parent $manifestPath
+    $validatedReferences = New-Object System.Collections.ArrayList
     foreach ($property in @($dependencies.PSObject.Properties)) {
         $reference = [string]$property.Value
         if (-not $reference.StartsWith("file:", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -771,26 +1045,109 @@ function Test-LocalPackageDependencySafety {
 
         $rawPath = $reference.Substring(5)
         try {
-            $decodedPath = [System.Uri]::UnescapeDataString($rawPath).Replace("/", "\")
-            $resolvedPath = if ([System.IO.Path]::IsPathRooted($decodedPath)) {
-                Get-NormalizedAbsolutePath -Path $decodedPath
-            } else {
-                Get-NormalizedAbsolutePath -Path (Join-Path -Path $manifestDirectory -ChildPath $decodedPath)
+            if ([string]::IsNullOrWhiteSpace($rawPath) -or $rawPath.IndexOf([char]0) -ge 0) {
+                throw "Local package path is empty or contains a null character."
             }
+            $decodedPath = ConvertFrom-LocalPackagePathEncoding -RawPath $rawPath
         } catch {
             Add-Blocker -Code "LOCAL_PACKAGE_PATH_INVALID" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) has an invalid file reference: $reference"
             continue
         }
 
-        if (-not (Test-PathWithinRoot -Path $resolvedPath -Root $script:NormalizedProjectRoot)) {
+        $forbiddenKind = Get-ForbiddenLocalPackagePathKind -Path $decodedPath
+        if ($null -ne $forbiddenKind) {
+            $code = if ($forbiddenKind -in @('DEVICE', 'AUTHORITY_OR_UNC', 'URI_SCHEME')) {
+                'LOCAL_PACKAGE_AUTHORITY_OR_DEVICE_PATH'
+            } else {
+                'LOCAL_PACKAGE_ABSOLUTE_PATH_FORBIDDEN'
+            }
+            Add-Blocker -Code $code -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) must use a relative path without URI authority, UNC, device, or absolute syntax: $reference"
+            continue
+        }
+
+        try {
+            $decodedWindowsPath = $decodedPath.Replace('/', '\')
+            $resolvedPath = Get-NormalizedAbsolutePath -Path (Join-Path -Path $manifestDirectory -ChildPath $decodedWindowsPath)
+        } catch {
+            Add-Blocker -Code "LOCAL_PACKAGE_PATH_INVALID" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) could not be normalized safely: $reference"
+            continue
+        }
+
+        if (-not (Test-PathWithinRoot -Path $resolvedPath -Root $projectForManifest)) {
             Add-Blocker -Code "LOCAL_PACKAGE_OUTSIDE_PROJECT" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) resolves outside the original and isolated project boundary: $reference"
             continue
         }
 
-        $relativePath = ConvertTo-ProjectRelativePath -Path $resolvedPath
+        $relativePath = if ($ValidateIsolatedCopy) {
+            $resolvedPath.Substring($script:Result.isolation.projectCopyPath.Length + 1).Replace('\', '/')
+        } else {
+            ConvertTo-ProjectRelativePath -Path $resolvedPath
+        }
         if (Test-ExcludedProjectPath -RelativePath $relativePath) {
             Add-Blocker -Code "LOCAL_PACKAGE_EXCLUDED_FROM_COPY" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) resolves into excluded path $relativePath."
+            continue
         }
+
+        $reparsePoint = Get-ReparsePointOnPath -Path $resolvedPath
+        if ($null -ne $reparsePoint) {
+            Add-Blocker -Code "LOCAL_PACKAGE_REPARSE_POINT" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) traverses reparse point $reparsePoint."
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $resolvedPath)) {
+            Add-Blocker -Code "LOCAL_PACKAGE_NOT_FOUND" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) does not exist at normalized project path $relativePath."
+            continue
+        }
+
+        if ($ValidateIsolatedCopy) {
+            $sourceRecord = @($script:Result.isolation.localPackageReferences | Where-Object { $_.name -ceq $property.Name }) | Select-Object -First 1
+            if ($null -eq $sourceRecord) {
+                Add-Blocker -Code "LOCAL_PACKAGE_COPY_RECORD_MISSING" -Check "isolation" -Path "Packages/manifest.json" -Message "Isolated local package $($property.Name) has no validated source record."
+                continue
+            }
+            if (-not [string]::Equals([string]$sourceRecord.projectRelativePath, $relativePath, [System.StringComparison]::Ordinal)) {
+                Add-Blocker -Code "LOCAL_PACKAGE_COPY_PATH_MISMATCH" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) resolves to a different relative path after isolation."
+                continue
+            }
+            if ([string]$sourceRecord.sourceResolvedPath -eq [string]$resolvedPath) {
+                Add-Blocker -Code "LOCAL_PACKAGE_SOURCE_REUSED" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) still resolves to the source path after isolation."
+                continue
+            }
+            $isolatedEntry = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+            $isolatedEntryType = if ($isolatedEntry.PSIsContainer) { 'Directory' } else { 'File' }
+            if (-not [string]::Equals([string]$sourceRecord.sourceEntryType, $isolatedEntryType, [System.StringComparison]::Ordinal)) {
+                Add-Blocker -Code "LOCAL_PACKAGE_COPY_TYPE_MISMATCH" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) changed filesystem type in the isolated copy."
+                continue
+            }
+            $sourceRecord.isolatedResolvedPath = $resolvedPath
+            $sourceRecord.isolatedPresent = $true
+            $sourceRecord.copied = $true
+        } else {
+            $isolatedResolvedPath = Get-NormalizedAbsolutePath -Path (Join-Path -Path $script:Result.isolation.projectCopyPath -ChildPath $relativePath.Replace('/', '\'))
+            if (-not (Test-PathWithinRoot -Path $isolatedResolvedPath -Root $script:Result.isolation.projectCopyPath)) {
+                Add-Blocker -Code "LOCAL_PACKAGE_ISOLATED_PATH_INVALID" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) cannot resolve inside the isolated project."
+                continue
+            }
+            if ($resolvedPath.Equals($isolatedResolvedPath, $script:PathComparison)) {
+                Add-Blocker -Code "LOCAL_PACKAGE_SOURCE_REUSED" -Check "isolation" -Path "Packages/manifest.json" -Message "Local package $($property.Name) source and isolated paths are unexpectedly identical."
+                continue
+            }
+            $entry = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+            [void]$validatedReferences.Add([pscustomobject][ordered]@{
+                name = $property.Name
+                reference = $reference
+                decodedRelativePath = $decodedPath.Replace('\', '/')
+                projectRelativePath = $relativePath
+                sourceResolvedPath = $resolvedPath
+                isolatedResolvedPath = $isolatedResolvedPath
+                sourceEntryType = if ($entry.PSIsContainer) { 'Directory' } else { 'File' }
+                isolatedPresent = $false
+                copied = $false
+            })
+        }
+    }
+
+    if (-not $ValidateIsolatedCopy) {
+        $script:Result.isolation.localPackageReferences = @($validatedReferences)
     }
 }
 
@@ -835,6 +1192,11 @@ function Initialize-ArtifactSession {
     [void][System.IO.Directory]::CreateDirectory($logsRoot)
     [void][System.IO.Directory]::CreateDirectory($resultsRoot)
 
+    $sessionReparsePoint = Get-ReparsePointOnPath -Path $sessionRoot
+    if ($null -ne $sessionReparsePoint) {
+        throw "The artifact session traverses reparse point $sessionReparsePoint."
+    }
+
     $script:SessionRoot = Get-NormalizedAbsolutePath -Path $sessionRoot
     $script:Result.isolation.artifactsRoot = $artifactParent
     $script:Result.isolation.sessionRoot = $script:SessionRoot
@@ -846,11 +1208,35 @@ function Initialize-ArtifactSession {
     $script:Result.unity.standardErrorPath = Join-Path -Path $logsRoot -ChildPath "unity-stderr.log"
 
     if (-not $requestedRootInvalid) {
+        $script:Result.preflight.artifactRootOutsideProject = $true
         Add-Evidence -Check "artifacts" -Status "PASSED" -Source $script:SessionRoot -Detail "All logs, results, and the isolated project are located outside the original project."
     }
 }
 
-# Validates the unity-project-doctor v0.2 JSON consumer contract.
+# Tests whether two string arrays have identical ordinal values and ordering.
+function Test-ExactStringArray {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Left,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$Right
+    )
+
+    if ($Left.Count -ne $Right.Count) {
+        return $false
+    }
+    for ($index = 0; $index -lt $Left.Count; $index++) {
+        if (-not [string]::Equals([string]$Left[$index], [string]$Right[$index], [System.StringComparison]::Ordinal)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+# Validates the complete Doctor schema and its current-project fingerprint binding.
 function Test-DoctorResult {
     param(
         [Parameter()]
@@ -887,31 +1273,35 @@ function Test-DoctorResult {
         return
     }
 
-    foreach ($requiredProperty in @(
-        "schemaVersion",
-        "scannerVersion",
-        "projectRoot",
-        "projectDetection",
-        "unityEditorVersion",
-        "git",
-        "packages",
-        "assemblies",
-        "buildSettings",
-        "agentsFiles",
-        "projectSkills",
-        "trackedGeneratedFolderPaths",
-        "warnings",
-        "blockedChecks",
-        "dynamicVerification",
-        "finalStatus",
-        "evidence"
-    )) {
-        if (-not (Test-JsonProperty -InputObject $doctorResult -Name $requiredProperty)) {
-            Add-DoctorValidationError -Code ("DOCTOR_REQUIRED_FIELD_MISSING_" + $requiredProperty.ToUpperInvariant()) -Message "Doctor JSON is missing required top-level field $requiredProperty."
-        }
+    $schemaVersion = Get-JsonPropertyValue -InputObject $doctorResult -Name "schemaVersion"
+    $script:Result.doctor.schemaVersion = $schemaVersion
+    if (@($script:LegacyDoctorSchemaVersion, $script:ExpectedDoctorSchemaVersion) -notcontains [string]$schemaVersion) {
+        Add-DoctorValidationError -Code "DOCTOR_SCHEMA_VERSION_UNSUPPORTED" -Message "Doctor schemaVersion must be $($script:ExpectedDoctorSchemaVersion); schema 1.0.0 is recognized only as a legacy static-audit contract." -JsonPath '$.schemaVersion' -Keyword 'const'
+        return
     }
 
-    $schemaVersion = Get-JsonPropertyValue -InputObject $doctorResult -Name "schemaVersion"
+    try {
+        $schemaPath = Resolve-DoctorSchemaPath -SchemaVersion ([string]$schemaVersion)
+        $script:Result.doctor.schemaPath = $schemaPath
+        $schemaReparsePoint = Get-ReparsePointOnPath -Path $schemaPath
+        if ($null -ne $schemaReparsePoint) {
+            throw "Doctor schema path traverses reparse point $schemaReparsePoint."
+        }
+        $schemaErrors = @(Invoke-JsonSchemaValidation -Instance $doctorResult -SchemaPath $schemaPath)
+    } catch {
+        Add-DoctorValidationError -Code "DOCTOR_SCHEMA_VALIDATION_UNAVAILABLE" -Message "Doctor JSON Schema validation could not be completed: $($_.Exception.Message)" -JsonPath '$' -Keyword '$ref'
+        return
+    }
+
+    foreach ($schemaError in $schemaErrors) {
+        $keywordCode = ([string]$schemaError.keyword).ToUpperInvariant().Replace('$', 'REF_')
+        Add-DoctorValidationError -Code ("DOCTOR_SCHEMA_" + $keywordCode) -Message $schemaError.message -JsonPath $schemaError.path -Keyword $schemaError.keyword
+    }
+    if ($schemaErrors.Count -gt 0) {
+        return
+    }
+    $script:Result.doctor.schemaValidated = $true
+
     $scannerVersion = Get-JsonPropertyValue -InputObject $doctorResult -Name "scannerVersion"
     $doctorProjectRoot = Get-JsonPropertyValue -InputObject $doctorResult -Name "projectRoot"
     $finalStatus = Get-JsonPropertyValue -InputObject $doctorResult -Name "finalStatus"
@@ -921,63 +1311,108 @@ function Test-DoctorResult {
     $warnings = @(Get-JsonPropertyValue -InputObject $doctorResult -Name "warnings")
     $dynamicVerification = Get-JsonPropertyValue -InputObject $doctorResult -Name "dynamicVerification"
     $evidence = @(Get-JsonPropertyValue -InputObject $doctorResult -Name "evidence")
+    $doctorFingerprint = Get-JsonPropertyValue -InputObject $doctorResult -Name "projectFingerprint"
 
-    $script:Result.doctor.schemaVersion = $schemaVersion
     $script:Result.doctor.scannerVersion = $scannerVersion
     $script:Result.doctor.projectRoot = $doctorProjectRoot
     $script:Result.doctor.finalStatus = $finalStatus
     $script:Result.doctor.warnings = $warnings
     $script:Result.doctor.warningCount = $warnings.Count
+    $script:Result.doctor.projectFingerprint = $doctorFingerprint
 
-    if ([string]$schemaVersion -ne $script:ExpectedDoctorSchemaVersion) {
-        Add-DoctorValidationError -Code "DOCTOR_SCHEMA_VERSION_MISMATCH" -Message "Doctor schemaVersion must be $($script:ExpectedDoctorSchemaVersion)."
+    if ([string]$schemaVersion -eq $script:LegacyDoctorSchemaVersion) {
+        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_CONTRACT_REQUIRED" -Message "Doctor schema 1.0.0 remains valid for static audit, but Baseline v0.1.1 requires schema 1.1.0 copy-set fingerprint evidence." -JsonPath '$.schemaVersion' -Keyword 'const'
+        return
     }
     if ([string]$scannerVersion -ne $script:ExpectedDoctorScannerVersion) {
-        Add-DoctorValidationError -Code "DOCTOR_SCANNER_VERSION_MISMATCH" -Message "Doctor scannerVersion must be $($script:ExpectedDoctorScannerVersion)."
+        Add-DoctorValidationError -Code "DOCTOR_SCANNER_VERSION_MISMATCH" -Message "Doctor scannerVersion must be $($script:ExpectedDoctorScannerVersion)." -JsonPath '$.scannerVersion' -Keyword 'const'
     }
     try {
         $normalizedDoctorRoot = Get-NormalizedAbsolutePath -Path ([string]$doctorProjectRoot)
         if (-not $normalizedDoctorRoot.Equals($script:NormalizedProjectRoot, $script:PathComparison)) {
-            Add-DoctorValidationError -Code "DOCTOR_PROJECT_ROOT_MISMATCH" -Message "Doctor projectRoot does not match the exact current project root."
+            Add-DoctorValidationError -Code "DOCTOR_PROJECT_ROOT_MISMATCH" -Message "Doctor projectRoot does not match the exact current project root." -JsonPath '$.projectRoot'
         }
     } catch {
-        Add-DoctorValidationError -Code "DOCTOR_PROJECT_ROOT_INVALID" -Message "Doctor projectRoot is absent or invalid."
+        Add-DoctorValidationError -Code "DOCTOR_PROJECT_ROOT_INVALID" -Message "Doctor projectRoot is absent or invalid." -JsonPath '$.projectRoot'
     }
 
     $isUnityProject = Get-JsonPropertyValue -InputObject $projectDetection -Name "isUnityProject"
     $rootStatus = Get-JsonPropertyValue -InputObject $projectDetection -Name "rootStatus"
     if ($isUnityProject -isnot [bool] -or -not [bool]$isUnityProject -or [string]$rootStatus -ne "UNITY_PROJECT") {
-        Add-DoctorValidationError -Code "DOCTOR_PROJECT_DETECTION_REJECTED" -Message "Doctor must identify the exact root as UNITY_PROJECT."
+        Add-DoctorValidationError -Code "DOCTOR_PROJECT_DETECTION_REJECTED" -Message "Doctor must identify the exact root as UNITY_PROJECT." -JsonPath '$.projectDetection'
     }
 
     $parseStatus = Get-JsonPropertyValue -InputObject $unityEditorVersion -Name "parseStatus"
     $doctorEditorVersion = Get-JsonPropertyValue -InputObject $unityEditorVersion -Name "editorVersion"
     if ([string]$parseStatus -ne "PARSED" -or [string]$doctorEditorVersion -ne $script:ExpectedUnityVersion) {
-        Add-DoctorValidationError -Code "DOCTOR_UNITY_VERSION_MISMATCH" -Message "Doctor must parse Unity editorVersion $($script:ExpectedUnityVersion)."
+        Add-DoctorValidationError -Code "DOCTOR_UNITY_VERSION_MISMATCH" -Message "Doctor must parse Unity editorVersion $($script:ExpectedUnityVersion)." -JsonPath '$.unityEditorVersion'
     }
 
     if (@("STATIC_AUDIT_COMPLETE", "STATIC_AUDIT_COMPLETE_WITH_WARNINGS") -notcontains [string]$finalStatus) {
-        Add-DoctorValidationError -Code "DOCTOR_FINAL_STATUS_REJECTED" -Message "Doctor finalStatus must be STATIC_AUDIT_COMPLETE or STATIC_AUDIT_COMPLETE_WITH_WARNINGS."
+        Add-DoctorValidationError -Code "DOCTOR_FINAL_STATUS_REJECTED" -Message "Doctor finalStatus must be STATIC_AUDIT_COMPLETE or STATIC_AUDIT_COMPLETE_WITH_WARNINGS." -JsonPath '$.finalStatus'
     }
     if ($blockedChecks.Count -gt 0 -and $null -ne $blockedChecks[0]) {
-        Add-DoctorValidationError -Code "DOCTOR_BLOCKED_CHECKS_PRESENT" -Message "Doctor blockedChecks must be empty."
+        Add-DoctorValidationError -Code "DOCTOR_BLOCKED_CHECKS_PRESENT" -Message "Doctor blockedChecks must be empty." -JsonPath '$.blockedChecks'
     }
     if ($evidence.Count -eq 0 -or $null -eq $evidence[0]) {
-        Add-DoctorValidationError -Code "DOCTOR_EVIDENCE_MISSING" -Message "Doctor evidence must contain the v0.2 static audit ledger."
+        Add-DoctorValidationError -Code "DOCTOR_EVIDENCE_MISSING" -Message "Doctor evidence must contain the v0.2.1 static audit ledger." -JsonPath '$.evidence'
     }
 
     foreach ($name in @("compilation", "tests", "build", "runtime")) {
         $dynamicItem = Get-JsonPropertyValue -InputObject $dynamicVerification -Name $name
         $dynamicStatus = Get-JsonPropertyValue -InputObject $dynamicItem -Name "status"
         if ([string]$dynamicStatus -ne "NOT_VERIFIED") {
-            Add-DoctorValidationError -Code ("DOCTOR_DYNAMIC_STATUS_INVALID_" + $name.ToUpperInvariant()) -Message "Doctor dynamicVerification.$name.status must remain NOT_VERIFIED."
+            Add-DoctorValidationError -Code ("DOCTOR_DYNAMIC_STATUS_INVALID_" + $name.ToUpperInvariant()) -Message "Doctor dynamicVerification.$name.status must remain NOT_VERIFIED." -JsonPath "$.dynamicVerification.$name.status"
+        }
+    }
+
+    $expectedExcludedPaths = [object[]]@($script:ExcludedTopLevelNames)
+    $doctorExcludedPaths = [object[]]@((Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "excludedTopLevelPaths"))
+    if (
+        [string](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "status") -ne "COMPUTED" -or
+        [string](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "contractVersion") -ne "1.0.0" -or
+        [string](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "algorithm") -ne "SHA-256" -or
+        [string](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "canonicalization") -ne "unity-copy-set-relative-path-length-sha256-lf-v1" -or
+        [int](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "stabilityPasses") -ne 2 -or
+        -not (Test-ExactStringArray -Left $doctorExcludedPaths -Right $expectedExcludedPaths)
+    ) {
+        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_POLICY_MISMATCH" -Message "Doctor projectFingerprint does not use the exact stable Baseline copy-set contract." -JsonPath '$.projectFingerprint'
+    } else {
+        try {
+            $currentFingerprint = Get-StableUnityCopySetFingerprint -ProjectRoot $script:NormalizedProjectRoot
+            $script:Result.doctor.currentProjectFingerprint = [ordered]@{
+                contractVersion = $currentFingerprint.contractVersion
+                status = $currentFingerprint.status
+                algorithm = $currentFingerprint.algorithm
+                canonicalization = $currentFingerprint.canonicalization
+                excludedTopLevelPaths = @($currentFingerprint.excludedTopLevelPaths)
+                directoryCount = $currentFingerprint.directoryCount
+                fileCount = $currentFingerprint.fileCount
+                treeSha256 = $currentFingerprint.treeSha256
+                stabilityPasses = $currentFingerprint.stabilityPasses
+                error = $null
+            }
+            $script:Result.doctor.fingerprintMatched = (
+                [int](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "directoryCount") -eq [int]$currentFingerprint.directoryCount -and
+                [int](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "fileCount") -eq [int]$currentFingerprint.fileCount -and
+                [string]::Equals(
+                    [string](Get-JsonPropertyValue -InputObject $doctorFingerprint -Name "treeSha256"),
+                    [string]$currentFingerprint.treeSha256,
+                    [System.StringComparison]::Ordinal
+                )
+            )
+            if (-not $script:Result.doctor.fingerprintMatched) {
+                Add-DoctorValidationError -Code "DOCTOR_PROJECT_FINGERPRINT_MISMATCH" -Message "Current copy-included project content does not match the Doctor fingerprint." -JsonPath '$.projectFingerprint.treeSha256'
+            }
+        } catch {
+            Add-DoctorValidationError -Code "CURRENT_PROJECT_FINGERPRINT_BLOCKED" -Message "Current project fingerprint could not be recomputed safely: $($_.Exception.Message)" -JsonPath '$.projectFingerprint'
         }
     }
 
     $script:Result.doctor.validationErrors = @($script:DoctorValidationErrors)
     $script:Result.doctor.accepted = $script:DoctorValidationErrors.Count -eq 0
     if ($script:Result.doctor.accepted) {
-        Add-Evidence -Check "doctor" -Status "PASSED" -Source $script:Result.doctor.sourcePath -Detail "unity-project-doctor schema 1.0.0 and scanner 0.2.0 evidence was accepted for the exact project root."
+        Add-Evidence -Check "doctor" -Status "PASSED" -Source $script:Result.doctor.sourcePath -Detail "The complete Doctor schema 1.1.0 document, scanner 0.2.1 semantics, and exact current copy-set fingerprint were accepted."
     }
 }
 
@@ -1046,7 +1481,19 @@ function Test-UnityExecutable {
         $item = Get-Item -LiteralPath $normalizedPath -Force -ErrorAction Stop
         $script:Result.unity.fileVersion = $item.VersionInfo.FileVersion
         $script:Result.unity.productVersion = $item.VersionInfo.ProductVersion
+        $script:Result.unity.companyName = $item.VersionInfo.CompanyName
         $script:Result.unity.executableSha256 = Get-FileSha256 -Path $normalizedPath
+        $signature = Get-AuthenticodeSignature -LiteralPath $normalizedPath -ErrorAction Stop
+        $script:Result.unity.signatureStatus = [string]$signature.Status
+        if ($null -ne $signature.SignerCertificate) {
+            $script:Result.unity.signerSubject = $signature.SignerCertificate.Subject
+            $script:Result.unity.certificateThumbprint = $signature.SignerCertificate.Thumbprint
+        }
+        $script:Result.unity.publisherMatched = (
+            $script:Result.unity.signatureStatus -eq "Valid" -and
+            -not [string]::IsNullOrWhiteSpace([string]$script:Result.unity.signerSubject) -and
+            [regex]::IsMatch([string]$script:Result.unity.signerSubject, "(?i)\bUnity Technologies\b")
+        )
         $versionMatch = [regex]::Match(
             [string]$item.VersionInfo.ProductVersion,
             "^(?<version>\d+\.\d+\.\d+[abfp]\d+)(?:_|$|\s)"
@@ -1067,8 +1514,16 @@ function Test-UnityExecutable {
         Add-Blocker -Code "UNITY_EXECUTABLE_VERSION_MISMATCH" -Check "unityExecutable" -Path $script:Result.unity.executablePath -Message "Unity.exe ProductVersion must identify exactly $($script:ExpectedUnityVersion)."
         return
     }
+    if ($script:Result.unity.signatureStatus -ne "Valid") {
+        Add-Blocker -Code "UNITY_EXECUTABLE_SIGNATURE_INVALID" -Check "unityExecutable" -Path $script:Result.unity.executablePath -Message "Unity.exe must have a currently valid Authenticode signature; observed status $($script:Result.unity.signatureStatus)."
+        return
+    }
+    if (-not $script:Result.unity.publisherMatched) {
+        Add-Blocker -Code "UNITY_EXECUTABLE_PUBLISHER_MISMATCH" -Check "unityExecutable" -Path $script:Result.unity.executablePath -Message "Unity.exe signer subject must identify Unity Technologies."
+        return
+    }
 
-    Add-Evidence -Check "unityExecutable" -Status "PASSED" -Source $script:Result.unity.executablePath -Detail "The specified Unity.exe ProductVersion identifies $($script:ExpectedUnityVersion)."
+    Add-Evidence -Check "unityExecutable" -Status "PASSED" -Source $script:Result.unity.executablePath -Detail "ProductVersion identifies $($script:ExpectedUnityVersion), Authenticode is valid, and the signer subject identifies Unity Technologies; certificate thumbprints are evidence, not a permanent pin."
 }
 
 # Quotes one Windows process argument without invoking a shell.
@@ -1121,48 +1576,49 @@ function Invoke-IsolatedUnity {
         }
     }
 
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $script:Result.unity.executablePath
-    $startInfo.Arguments = [string]::Join(" ", [string[]]@($arguments | ForEach-Object { ConvertTo-ProcessArgument -Argument ([string]$_) }))
-    $startInfo.WorkingDirectory = $script:SessionRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.StandardOutputEncoding = $script:Utf8NoBom
-    $startInfo.StandardErrorEncoding = $script:Utf8NoBom
+    $processResult = Invoke-UnityProcessInJob `
+        -ExecutablePath $script:Result.unity.executablePath `
+        -Arguments ([string[]]$arguments) `
+        -WorkingDirectory $script:SessionRoot `
+        -StandardOutputPath $script:Result.unity.standardOutputPath `
+        -StandardErrorPath $script:Result.unity.standardErrorPath `
+        -TimeoutSeconds $TimeoutSeconds
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    try {
-        [void]$process.Start()
-        $script:Result.unity.processStarted = $true
-        Add-Evidence -Check "unityProcess" -Status "OBSERVED" -Source $script:Result.unity.executablePath -Detail "Only the specified Unity.exe was started; Unity Hub was not invoked by the verifier."
+    $script:Result.unity.processStarted = $processResult.processStarted
+    $script:Result.unity.timedOut = $processResult.timedOut
+    $script:Result.unity.exitCode = $processResult.exitCode
+    foreach ($propertyName in @(
+        "rootProcessId",
+        "jobObjectCreated",
+        "killOnJobCloseConfigured",
+        "processAssignedToJob",
+        "terminationRequested",
+        "terminationReason",
+        "terminationApiSucceeded",
+        "rootProcessExited",
+        "processTreeExitVerified",
+        "activeProcessCountAfterWait",
+        "treeExitWaitMilliseconds",
+        "controlError"
+    )) {
+        $script:Result.processControl[$propertyName] = $processResult.$propertyName
+    }
 
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-        $timeoutMilliseconds = [int]([math]::Min([int64]::MaxValue, ([int64]$TimeoutSeconds * 1000)))
-        $completed = $process.WaitForExit($timeoutMilliseconds)
-        if (-not $completed) {
-            $script:Result.unity.timedOut = $true
-            try {
-                $process.Kill()
-                $process.WaitForExit()
-            } catch {
-            }
-        } else {
-            $process.WaitForExit()
-        }
-
-        $stdout = $stdoutTask.Result
-        $stderr = $stderrTask.Result
-        if (-not $script:Result.unity.timedOut) {
-            $script:Result.unity.exitCode = $process.ExitCode
-        }
-        [void][System.IO.File]::WriteAllText($script:Result.unity.standardOutputPath, $stdout, $script:Utf8NoBom)
-        [void][System.IO.File]::WriteAllText($script:Result.unity.standardErrorPath, $stderr, $script:Utf8NoBom)
-    } finally {
-        $process.Dispose()
+    if ($processResult.processStarted) {
+        Add-Evidence -Check "unityProcess" -Status "OBSERVED" -Source $script:Result.unity.executablePath -Detail "Only the specified signed Unity.exe was started in a kill-on-close Job Object; Unity Hub was not invoked."
+    }
+    if (
+        -not $processResult.jobObjectCreated -or
+        -not $processResult.killOnJobCloseConfigured -or
+        ($processResult.processStarted -and -not $processResult.processAssignedToJob) -or
+        -not [string]::IsNullOrWhiteSpace([string]$processResult.controlError)
+    ) {
+        Add-Blocker -Code "UNITY_JOB_OBJECT_CONTROL_FAILED" -Check "unityProcess" -Path $script:Result.unity.executablePath -Message "Unity process-tree control was not established cleanly: $($processResult.controlError)"
+    }
+    if ($processResult.processStarted -and -not $processResult.processTreeExitVerified) {
+        Add-Blocker -Code "UNITY_PROCESS_TREE_EXIT_UNPROVEN" -Check "unityProcess" -Path $script:Result.unity.executablePath -Message "The verifier could not prove that Unity and every assigned descendant exited within the bounded wait."
+    } elseif ($processResult.processStarted) {
+        Add-Evidence -Check "unityProcessTree" -Status "PASSED" -Source $script:Result.unity.executablePath -Detail "Job Object accounting reported zero active processes after bounded completion or termination."
     }
 }
 
@@ -1432,6 +1888,22 @@ function ConvertTo-FinalJson {
 
 try {
     try {
+        foreach ($libraryPath in @(
+            $script:ValidatorLibraryPath,
+            $script:ProcessLibraryPath,
+            $script:EditorLogLibraryPath,
+            $script:FingerprintLibraryPath
+        )) {
+            if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
+                throw "Required verifier library was not found: $libraryPath"
+            }
+            . $libraryPath
+        }
+    } catch {
+        Add-Blocker -Code "VERIFIER_LIBRARY_LOAD_FAILED" -Check "verifier" -Path $null -Message "A trusted verifier library could not be loaded: $($_.Exception.Message)"
+    }
+
+    try {
         $script:NormalizedProjectRoot = Get-NormalizedAbsolutePath -Path $ProjectRoot
         $script:Result.projectRoot = $script:NormalizedProjectRoot
         if (-not (Test-Path -LiteralPath $script:NormalizedProjectRoot -PathType Container)) {
@@ -1456,16 +1928,28 @@ try {
             Add-Blocker -Code "TIMEOUT_RANGE_INVALID" -Check "unityProcess" -Path $null -Message "TimeoutSeconds must be between 1 and 86400."
         }
 
+        Test-SourceProjectEditorPreflight
         Test-DoctorResult -Path $DoctorResultPath
         Test-CurrentProjectVersion
         Test-UnityExecutable -Path $UnityExecutable
+        if ($script:Blockers.Count -eq 0) {
+            $script:Result.preflight.trustedPathsWithoutReparse = $true
+        }
+        Test-LocalPackageDependencySafety
     }
 
     if ($script:Blockers.Count -eq 0) {
         try {
             $script:OriginalSnapshotBefore = Get-ProjectTreeSnapshot -Root $script:NormalizedProjectRoot
             Set-IntegritySnapshotSummaries
-            Add-Evidence -Check "originalIntegrityBefore" -Status "OBSERVED" -Source $script:NormalizedProjectRoot -Detail "Captured the complete original directory list, file list, lengths, and SHA-256 hashes before Unity startup."
+            $stabilitySnapshot = Get-ProjectTreeSnapshot -Root $script:NormalizedProjectRoot
+            $stabilityComparison = Compare-ProjectTreeSnapshots -Before $script:OriginalSnapshotBefore -After $stabilitySnapshot
+            if (-not $stabilityComparison.unchanged) {
+                Add-Blocker -Code "SOURCE_SNAPSHOT_UNSTABLE" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "Two consecutive complete source snapshots differed before isolation."
+            } else {
+                $script:Result.preflight.sourceSnapshotStable = $true
+                Add-Evidence -Check "originalIntegrityBefore" -Status "OBSERVED" -Source $script:NormalizedProjectRoot -Detail "Captured two identical complete source directory/file/length/SHA-256 snapshots before copying."
+            }
         } catch {
             Add-Blocker -Code "ORIGINAL_PRE_SNAPSHOT_FAILED" -Check "originalIntegrity" -Path $script:NormalizedProjectRoot -Message "The original pre-run tree could not be hashed safely: $($_.Exception.Message)"
             $script:Result.originalProjectIntegrity.status = "BLOCKED"
@@ -1474,7 +1958,6 @@ try {
 
     if ($null -ne $script:OriginalSnapshotBefore) {
         try {
-            Test-LocalPackageDependencySafety
             if ($script:Blockers.Count -eq 0) {
                 $copyResult = Copy-ProjectToIsolation -Snapshot $script:OriginalSnapshotBefore -Destination $script:Result.isolation.projectCopyPath
                 $script:Result.isolation.copyStatus = "COPIED"
@@ -1482,9 +1965,46 @@ try {
                 $script:Result.isolation.copiedFileCount = $copyResult.copiedFileCount
                 Add-Evidence -Check "isolation" -Status "PASSED" -Source $script:Result.isolation.projectCopyPath -Detail "Project source and configuration were copied without generated or tooling trees."
 
-                Invoke-IsolatedUnity
-                $script:Result.editorLog = Get-EditorLogAnalysis -Path $script:Result.artifacts.editorLogPath -ExpectedProjectPath $script:Result.isolation.projectCopyPath
-                Set-CompilationVerification
+                Test-LocalPackageDependencySafety -ValidateIsolatedCopy
+                if ($script:Blockers.Count -eq 0) {
+                    $isolatedFingerprint = Get-StableUnityCopySetFingerprint -ProjectRoot $script:Result.isolation.projectCopyPath
+                    $script:Result.isolation.copyFingerprint = [ordered]@{
+                        contractVersion = $isolatedFingerprint.contractVersion
+                        status = $isolatedFingerprint.status
+                        algorithm = $isolatedFingerprint.algorithm
+                        canonicalization = $isolatedFingerprint.canonicalization
+                        excludedTopLevelPaths = @($isolatedFingerprint.excludedTopLevelPaths)
+                        directoryCount = $isolatedFingerprint.directoryCount
+                        fileCount = $isolatedFingerprint.fileCount
+                        treeSha256 = $isolatedFingerprint.treeSha256
+                        stabilityPasses = $isolatedFingerprint.stabilityPasses
+                        error = $null
+                    }
+                    if (
+                        -not [string]::Equals([string]$isolatedFingerprint.treeSha256, [string]$script:Result.doctor.currentProjectFingerprint.treeSha256, [System.StringComparison]::Ordinal) -or
+                        [int]$isolatedFingerprint.directoryCount -ne [int]$script:Result.doctor.currentProjectFingerprint.directoryCount -or
+                        [int]$isolatedFingerprint.fileCount -ne [int]$script:Result.doctor.currentProjectFingerprint.fileCount
+                    ) {
+                        Add-Blocker -Code "ISOLATED_COPY_FINGERPRINT_MISMATCH" -Check "isolation" -Path $script:Result.isolation.projectCopyPath -Message "The isolated copy does not match the accepted current-project fingerprint."
+                    } else {
+                        Add-Evidence -Check "isolationFingerprint" -Status "PASSED" -Source $script:Result.isolation.projectCopyPath -Detail "The isolated copy has the same canonical file-set SHA-256 fingerprint as the accepted Doctor-bound source content."
+                    }
+                }
+
+                if ($script:Blockers.Count -eq 0) {
+                    $preLaunchSnapshot = Get-ProjectTreeSnapshot -Root $script:NormalizedProjectRoot
+                    $preLaunchComparison = Compare-ProjectTreeSnapshots -Before $script:OriginalSnapshotBefore -After $preLaunchSnapshot
+                    if (-not $preLaunchComparison.unchanged) {
+                        $script:Result.preflight.sourceSnapshotStable = $false
+                        Add-Blocker -Code "SOURCE_CHANGED_DURING_ISOLATION" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "The source project changed while the isolated copy was being prepared; Unity was not started."
+                    }
+                }
+
+                if ($script:Blockers.Count -eq 0) {
+                    Invoke-IsolatedUnity
+                    $script:Result.editorLog = Get-UnityEditorLogAnalysis -Path $script:Result.artifacts.editorLogPath -ExpectedProjectPath $script:Result.isolation.projectCopyPath -ExpectedUnityVersion $script:ExpectedUnityVersion
+                    Set-CompilationVerification
+                }
             }
         } catch {
             if ($script:Result.isolation.copyStatus -eq "NOT_STARTED") {
@@ -1520,7 +2040,7 @@ try {
 }
 
 foreach ($scopeName in @("tests", "playerBuild", "playMode", "runtime")) {
-    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "v0.1 scope" -Detail $script:Result.verification.$scopeName.reason
+    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "v0.1.1 scope" -Detail $script:Result.verification.$scopeName.reason
 }
 
 $finalJson = ConvertTo-FinalJson

@@ -14,8 +14,9 @@ $ProgressPreference = "SilentlyContinue"
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $script:Utf8NoBom
-$script:SchemaVersion = "1.0.0"
-$script:ScannerVersion = "0.2.0"
+$script:SchemaVersion = "1.1.0"
+$script:ScannerVersion = "0.2.1"
+$script:FingerprintHelperPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-project-fingerprint.ps1"
 $script:IsWindowsPlatform = $env:OS -eq "Windows_NT"
 $script:PathComparison = if ($script:IsWindowsPlatform) {
     [System.StringComparison]::OrdinalIgnoreCase
@@ -774,6 +775,21 @@ function New-AuditResult {
         agentsFiles = @()
         projectSkills = @()
         trackedGeneratedFolderPaths = @()
+        projectFingerprint = [ordered]@{
+            contractVersion = "1.0.0"
+            status = "NOT_APPLICABLE"
+            algorithm = "SHA-256"
+            canonicalization = "unity-copy-set-relative-path-length-sha256-lf-v1"
+            excludedTopLevelPaths = @(
+                ".agents", ".codex", ".git", ".hg", ".idea", ".svn", ".vs",
+                "Build", "Builds", "Library", "Logs", "Obj", "Temp", "UserSettings"
+            )
+            directoryCount = $null
+            fileCount = $null
+            treeSha256 = $null
+            stabilityPasses = 0
+            error = $null
+        }
         warnings = @()
         blockedChecks = @()
         dynamicVerification = [ordered]@{
@@ -796,6 +812,41 @@ function New-AuditResult {
         }
         finalStatus = "AUDIT_BLOCKED"
         evidence = @()
+    }
+}
+
+# Computes a stable SHA-256 fingerprint for exactly the file set copied by Baseline.
+function Invoke-ProjectFingerprintInspection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Collections.IDictionary]$Result
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $script:FingerprintHelperPath -PathType Leaf)) {
+            throw "Fingerprint helper was not found: $($script:FingerprintHelperPath)"
+        }
+        . $script:FingerprintHelperPath
+        $fingerprint = Get-StableUnityCopySetFingerprint -ProjectRoot $script:CandidateRoot
+        $Result.projectFingerprint.contractVersion = $fingerprint.contractVersion
+        $Result.projectFingerprint.status = $fingerprint.status
+        $Result.projectFingerprint.algorithm = $fingerprint.algorithm
+        $Result.projectFingerprint.canonicalization = $fingerprint.canonicalization
+        $Result.projectFingerprint.excludedTopLevelPaths = @($fingerprint.excludedTopLevelPaths)
+        $Result.projectFingerprint.directoryCount = $fingerprint.directoryCount
+        $Result.projectFingerprint.fileCount = $fingerprint.fileCount
+        $Result.projectFingerprint.treeSha256 = $fingerprint.treeSha256
+        $Result.projectFingerprint.stabilityPasses = $fingerprint.stabilityPasses
+        $Result.projectFingerprint.error = $null
+        Add-Evidence -Check "projectFingerprint" -Status "OBSERVED" -Source $script:CandidateRoot -Detail "Computed two identical SHA-256 snapshots over the exact Baseline copy-included file set."
+    } catch {
+        $Result.projectFingerprint.status = "BLOCKED"
+        $Result.projectFingerprint.directoryCount = $null
+        $Result.projectFingerprint.fileCount = $null
+        $Result.projectFingerprint.treeSha256 = $null
+        $Result.projectFingerprint.stabilityPasses = 0
+        $Result.projectFingerprint.error = $_.Exception.Message
+        Add-BlockedCheck -Code "PROJECT_FINGERPRINT_BLOCKED" -Check "projectFingerprint" -Path $null -Message "The Baseline copy-set fingerprint could not be computed safely: $($_.Exception.Message)"
     }
 }
 
@@ -1811,6 +1862,7 @@ try {
     $auditResult = New-AuditResult -NormalizedProjectRoot $script:CandidateRoot
     $isUnityProject = Invoke-ProjectDetection -Result $auditResult
     if ($isUnityProject) {
+        Invoke-ProjectFingerprintInspection -Result $auditResult
         Invoke-UnityVersionInspection -Result $auditResult
         Invoke-GitInspection -Result $auditResult
         Invoke-PackageInspection -Result $auditResult

@@ -8,10 +8,17 @@ $ProgressPreference = "SilentlyContinue"
 $script:RepositoryRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $script:ScannerPath = Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\scripts\inspect-unity-project.ps1"
 $script:InstallerPath = Join-Path $script:RepositoryRoot "scripts\install-codex-skills.ps1"
-$script:SchemaPath = Join-Path $script:RepositoryRoot "schemas\unity-project-audit.schema.json"
+$script:LegacySchemaPath = Join-Path $script:RepositoryRoot "schemas\unity-project-audit.schema.json"
+$script:SchemaPath = Join-Path $script:RepositoryRoot "schemas\unity-project-audit-1.1.0.schema.json"
+$script:SchemaValidatorPath = Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1"
 $script:FixtureRoot = Join-Path $PSScriptRoot "fixtures"
 $script:TestCount = 0
 $script:ScratchRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unity-project-doctor-tests-" + [guid]::NewGuid().ToString("N"))
+
+if (-not (Test-Path -LiteralPath $script:SchemaValidatorPath -PathType Leaf)) {
+    throw "Shared JSON Schema validator was not found: $($script:SchemaValidatorPath)"
+}
+. $script:SchemaValidatorPath
 
 # Throws a test failure when a condition is false.
 function Assert-True {
@@ -84,204 +91,18 @@ function Get-JsonObjectPropertyValue {
     return $property.Value
 }
 
-# Tests the JSON instance type represented by a PowerShell value.
-function Test-JsonSchemaInstanceType {
-    param(
-        [Parameter()]
-        [AllowNull()]
-        [object]$Value,
-
-        [Parameter(Mandatory = $true)]
-        [string]$TypeName
-    )
-
-    switch ($TypeName) {
-        "null" { return $null -eq $Value }
-        "object" { return $null -ne $Value -and ($Value -is [pscustomobject] -or $Value -is [System.Collections.IDictionary]) }
-        "array" { return $null -ne $Value -and $Value -is [System.Array] }
-        "string" { return $null -ne $Value -and $Value -is [string] }
-        "boolean" { return $null -ne $Value -and $Value -is [bool] }
-        "integer" {
-            if ($null -eq $Value) {
-                return $false
-            }
-            return [Type]::GetTypeCode($Value.GetType()) -in @(
-                [TypeCode]::Byte,
-                [TypeCode]::SByte,
-                [TypeCode]::Int16,
-                [TypeCode]::UInt16,
-                [TypeCode]::Int32,
-                [TypeCode]::UInt32,
-                [TypeCode]::Int64,
-                [TypeCode]::UInt64
-            )
-        }
-        "number" {
-            if ($null -eq $Value) {
-                return $false
-            }
-            return [Type]::GetTypeCode($Value.GetType()) -in @(
-                [TypeCode]::Byte,
-                [TypeCode]::SByte,
-                [TypeCode]::Int16,
-                [TypeCode]::UInt16,
-                [TypeCode]::Int32,
-                [TypeCode]::UInt32,
-                [TypeCode]::Int64,
-                [TypeCode]::UInt64,
-                [TypeCode]::Single,
-                [TypeCode]::Double,
-                [TypeCode]::Decimal
-            )
-        }
-        default { throw "Unsupported JSON Schema type in the fixture validator: $TypeName" }
-    }
-}
-
-# Resolves one local #/$defs reference used by the frozen audit schema.
-function Resolve-LocalSchemaReference {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$RootSchema,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Reference
-    )
-
-    $prefix = '#/$defs/'
-    if (-not $Reference.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
-        throw "Unsupported non-local JSON Schema reference: $Reference"
-    }
-    $definitionName = $Reference.Substring($prefix.Length)
-    $definitions = Get-JsonObjectPropertyValue -Object $RootSchema -Name '$defs'
-    $definition = if ($null -eq $definitions) { $null } else { Get-JsonObjectPropertyValue -Object $definitions -Name $definitionName }
-    if ($null -eq $definition) {
-        throw "JSON Schema reference was not found: $Reference"
-    }
-    return $definition
-}
-
-# Recursively validates the JSON Schema keywords used by the audit contract.
-function Assert-JsonMatchesSchemaNode {
-    param(
-        [Parameter()]
-        [AllowNull()]
-        [object]$Value,
-
-        [Parameter(Mandatory = $true)]
-        [object]$Schema,
-
-        [Parameter(Mandatory = $true)]
-        [object]$RootSchema,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Path
-    )
-
-    $referenceProperty = $Schema.PSObject.Properties['$ref']
-    if ($null -ne $referenceProperty) {
-        $resolvedSchema = Resolve-LocalSchemaReference -RootSchema $RootSchema -Reference ([string]$referenceProperty.Value)
-        Assert-JsonMatchesSchemaNode -Value $Value -Schema $resolvedSchema -RootSchema $RootSchema -Path $Path
-        return
-    }
-
-    $typeProperty = $Schema.PSObject.Properties['type']
-    if ($null -ne $typeProperty) {
-        $matchesType = $false
-        foreach ($typeName in @($typeProperty.Value)) {
-            if (Test-JsonSchemaInstanceType -Value $Value -TypeName ([string]$typeName)) {
-                $matchesType = $true
-                break
-            }
-        }
-        Assert-True -Condition $matchesType -Message "$Path must match JSON Schema type $(@($typeProperty.Value) -join '|')"
-    }
-
-    $constProperty = $Schema.PSObject.Properties['const']
-    if ($null -ne $constProperty) {
-        Assert-Equal -Expected $constProperty.Value -Actual $Value -Message "$Path JSON Schema const"
-    }
-
-    $enumProperty = $Schema.PSObject.Properties['enum']
-    if ($null -ne $enumProperty) {
-        $enumMatch = $false
-        foreach ($candidate in @($enumProperty.Value)) {
-            if (($null -eq $candidate -and $null -eq $Value) -or ($null -ne $candidate -and $null -ne $Value -and $candidate -ceq $Value)) {
-                $enumMatch = $true
-                break
-            }
-        }
-        Assert-True -Condition $enumMatch -Message "$Path must be one of the frozen JSON Schema enum values"
-    }
-
-    if ($Value -is [string]) {
-        $minLengthProperty = $Schema.PSObject.Properties['minLength']
-        if ($null -ne $minLengthProperty) {
-            Assert-True -Condition ($Value.Length -ge [int]$minLengthProperty.Value) -Message "$Path minimum string length"
-        }
-        $maxLengthProperty = $Schema.PSObject.Properties['maxLength']
-        if ($null -ne $maxLengthProperty) {
-            Assert-True -Condition ($Value.Length -le [int]$maxLengthProperty.Value) -Message "$Path maximum string length"
-        }
-        $patternProperty = $Schema.PSObject.Properties['pattern']
-        if ($null -ne $patternProperty) {
-            Assert-True -Condition ([regex]::IsMatch($Value, [string]$patternProperty.Value)) -Message "$Path JSON Schema pattern"
-        }
-    }
-
-    if ($Value -is [System.Array]) {
-        $minItemsProperty = $Schema.PSObject.Properties['minItems']
-        if ($null -ne $minItemsProperty) {
-            Assert-True -Condition ($Value.Count -ge [int]$minItemsProperty.Value) -Message "$Path minimum array item count"
-        }
-        $itemsProperty = $Schema.PSObject.Properties['items']
-        if ($null -ne $itemsProperty) {
-            for ($index = 0; $index -lt $Value.Count; $index++) {
-                Assert-JsonMatchesSchemaNode -Value $Value[$index] -Schema $itemsProperty.Value -RootSchema $RootSchema -Path "${Path}[$index]"
-            }
-        }
-    }
-
-    $isObject = $null -ne $Value -and ($Value -is [pscustomobject] -or $Value -is [System.Collections.IDictionary])
-    if ($isObject) {
-        $requiredProperty = $Schema.PSObject.Properties['required']
-        if ($null -ne $requiredProperty) {
-            foreach ($requiredName in @($requiredProperty.Value)) {
-                Assert-True -Condition ($null -ne $Value.PSObject.Properties[[string]$requiredName]) -Message "$Path missing required property $requiredName"
-            }
-        }
-
-        $propertiesProperty = $Schema.PSObject.Properties['properties']
-        if ($null -ne $propertiesProperty) {
-            foreach ($schemaProperty in $propertiesProperty.Value.PSObject.Properties) {
-                $instanceProperty = $Value.PSObject.Properties[$schemaProperty.Name]
-                if ($null -ne $instanceProperty) {
-                    Assert-JsonMatchesSchemaNode -Value $instanceProperty.Value -Schema $schemaProperty.Value -RootSchema $RootSchema -Path "$Path.$($schemaProperty.Name)"
-                }
-            }
-        }
-
-        $additionalPropertiesProperty = $Schema.PSObject.Properties['additionalProperties']
-        if ($null -ne $additionalPropertiesProperty -and $additionalPropertiesProperty.Value -eq $false) {
-            $allowedNames = if ($null -eq $propertiesProperty) { @() } else { @($propertiesProperty.Value.PSObject.Properties | ForEach-Object { $_.Name }) }
-            foreach ($instanceProperty in $Value.PSObject.Properties) {
-                Assert-True -Condition ($allowedNames -ccontains $instanceProperty.Name) -Message "$Path contains additional property $($instanceProperty.Name)"
-            }
-        }
-    }
-}
-
-# Validates one complete scanner result against schemaVersion 1.0.0.
+# Validates one complete scanner result with the same validator used by Baseline production.
 function Assert-AuditContract {
     param(
         [Parameter(Mandatory = $true)]
         [object]$Result,
 
         [Parameter(Mandatory = $true)]
-        [object]$Schema
+        [string]$SchemaPath
     )
 
-    Assert-JsonMatchesSchemaNode -Value $Result -Schema $Schema -RootSchema $Schema -Path '$'
+    $errors = @(Invoke-JsonSchemaValidation -Instance $Result -SchemaPath $SchemaPath)
+    Assert-Equal -Expected 0 -Actual $errors.Count -Message "Complete audit JSON Schema validation errors: $($errors | ConvertTo-Json -Compress)"
 }
 
 # Confirms that a structured warning code is present.
@@ -474,22 +295,25 @@ function Get-NormalizedLinkTarget {
     return [System.IO.Path]::GetFullPath($target).TrimEnd("\", "/")
 }
 
-Write-Host "Unity Project Doctor v0.2 static tests"
+Write-Host "Unity Project Doctor v0.2.1 static tests"
 Write-Host "Scratch root: $script:ScratchRoot"
 
 Assert-True -Condition (Test-Path -LiteralPath $script:ScannerPath -PathType Leaf) -Message "Scanner script must exist"
 Assert-True -Condition (Test-Path -LiteralPath $script:InstallerPath -PathType Leaf) -Message "Installer script must exist"
-Assert-True -Condition (Test-Path -LiteralPath $script:SchemaPath -PathType Leaf) -Message "Frozen audit JSON Schema must exist"
+Assert-True -Condition (Test-Path -LiteralPath $script:LegacySchemaPath -PathType Leaf) -Message "Frozen 1.0.0 audit JSON Schema must exist"
+Assert-True -Condition (Test-Path -LiteralPath $script:SchemaPath -PathType Leaf) -Message "Fingerprint audit JSON Schema must exist"
+$legacyAuditSchema = ConvertFrom-Json -InputObject (Get-Content -Raw -LiteralPath $script:LegacySchemaPath) -ErrorAction Stop
 $auditSchema = ConvertFrom-Json -InputObject (Get-Content -Raw -LiteralPath $script:SchemaPath) -ErrorAction Stop
 Assert-Equal -Expected "https://json-schema.org/draft/2020-12/schema" -Actual (Get-JsonObjectPropertyValue -Object $auditSchema -Name '$schema') -Message "JSON Schema draft"
-Assert-Equal -Expected "1.0.0" -Actual $auditSchema.properties.schemaVersion.const -Message "Frozen JSON Schema contract version"
+Assert-Equal -Expected "1.0.0" -Actual $legacyAuditSchema.properties.schemaVersion.const -Message "Frozen legacy JSON Schema contract version"
+Assert-Equal -Expected "1.1.0" -Actual $auditSchema.properties.schemaVersion.const -Message "Fingerprint JSON Schema contract version"
 $version = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()
 Assert-Equal -Expected "0.2.0" -Actual $version -Message "Repository VERSION"
 $doctorVersion = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\VERSION")).Trim()
-Assert-Equal -Expected "0.2.0" -Actual $doctorVersion -Message "Doctor Skill VERSION"
+Assert-Equal -Expected "0.2.1" -Actual $doctorVersion -Message "Doctor Skill VERSION"
 $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\SKILL.md")
 Assert-True -Condition ($skillContent -match "^---\r?\nname: unity-project-doctor\r?\ndescription:") -Message "Skill frontmatter and name"
-Assert-True -Condition ($skillContent -match "schemaVersion to be exactly 1\.0\.0") -Message "Skill must pin the frozen audit contract"
+Assert-True -Condition ($skillContent -match "schemaVersion 1\.1\.0") -Message "Skill must describe the fingerprint audit contract"
 $agentContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\agents\openai.yaml")
 Assert-True -Condition ($agentContent -match "(?m)^\s*allow_implicit_invocation:\s*false\s*$") -Message "Implicit invocation must remain disabled"
 $repositoryBefore = Get-TreeSnapshot -Root $script:RepositoryRoot
@@ -500,7 +324,7 @@ $notUnity = Invoke-ScannerProcess -ProjectRoot (Join-Path $script:FixtureRoot "n
 Assert-Equal -Expected "NOT_A_UNITY_PROJECT" -Actual $notUnity.result.finalStatus -Message "Non-Unity fixture status"
 Assert-Equal -Expected $false -Actual $notUnity.result.projectDetection.isUnityProject -Message "Non-Unity project detection"
 Assert-DynamicChecksNotVerified -Result $notUnity.result
-Assert-AuditContract -Result $notUnity.result -Schema $auditSchema
+Assert-AuditContract -Result $notUnity.result -SchemaPath $script:SchemaPath
 
 $cleanRoot = Copy-FixtureToScratch -Name "unity-minimal-clean"
 Initialize-FixtureGitRepository -Root $cleanRoot
@@ -527,19 +351,22 @@ Assert-Equal -Expected $cleanFirst.result.projectRoot -Actual $cleanDefaultRoot.
 Assert-Equal -Expected "STATIC_AUDIT_COMPLETE" -Actual $cleanDefaultRoot.result.finalStatus -Message "Default ProjectRoot audit status"
 Assert-Equal -Expected $cleanBefore -Actual $cleanAfter -Message "Minimal clean fixture must remain byte-for-byte unchanged"
 Assert-DynamicChecksNotVerified -Result $cleanFirst.result
-Assert-AuditContract -Result $cleanFirst.result -Schema $auditSchema
-Assert-AuditContract -Result $cleanPretty.result -Schema $auditSchema
+Assert-AuditContract -Result $cleanFirst.result -SchemaPath $script:SchemaPath
+Assert-AuditContract -Result $cleanPretty.result -SchemaPath $script:SchemaPath
 
 foreach ($requiredProperty in @(
     "schemaVersion", "scannerVersion", "projectRoot", "projectDetection",
     "unityEditorVersion", "git", "packages", "assemblies", "buildSettings",
-    "agentsFiles", "projectSkills", "trackedGeneratedFolderPaths", "warnings",
+    "agentsFiles", "projectSkills", "trackedGeneratedFolderPaths", "projectFingerprint", "warnings",
     "blockedChecks", "dynamicVerification", "finalStatus", "evidence"
 )) {
     Assert-JsonProperty -Object $cleanFirst.result -Name $requiredProperty
 }
-Assert-Equal -Expected "1.0.0" -Actual $cleanFirst.result.schemaVersion -Message "Schema version"
-Assert-Equal -Expected "0.2.0" -Actual $cleanFirst.result.scannerVersion -Message "Scanner version"
+Assert-Equal -Expected "1.1.0" -Actual $cleanFirst.result.schemaVersion -Message "Schema version"
+Assert-Equal -Expected "0.2.1" -Actual $cleanFirst.result.scannerVersion -Message "Scanner version"
+Assert-Equal -Expected "COMPUTED" -Actual $cleanFirst.result.projectFingerprint.status -Message "Project fingerprint status"
+Assert-Equal -Expected 2 -Actual $cleanFirst.result.projectFingerprint.stabilityPasses -Message "Project fingerprint stability passes"
+Assert-Equal -Expected $cleanFirst.result.projectFingerprint.treeSha256 -Actual $cleanSecond.result.projectFingerprint.treeSha256 -Message "Project fingerprint determinism"
 
 $previousGitDirectory = [Environment]::GetEnvironmentVariable("GIT_DIR", "Process")
 try {
@@ -550,7 +377,7 @@ try {
 }
 Assert-Equal -Expected "SAFE" -Actual $sanitizedEnvironmentResult.result.git.metadataStatus -Message "Inherited GIT_DIR must not redirect scanner Git operations"
 Assert-Equal -Expected "STATIC_AUDIT_COMPLETE" -Actual $sanitizedEnvironmentResult.result.finalStatus -Message "Sanitized Git environment audit status"
-Assert-AuditContract -Result $sanitizedEnvironmentResult.result -Schema $auditSchema
+Assert-AuditContract -Result $sanitizedEnvironmentResult.result -SchemaPath $script:SchemaPath
 
 $unicodeDirectoryName = -join @(
     [char]0xC720,
@@ -568,7 +395,7 @@ Initialize-FixtureGitRepository -Root $unicodeRoot
 $unicodeResult = Invoke-ScannerProcess -ProjectRoot $unicodeRoot
 Assert-Equal -Expected ([System.IO.Path]::GetFullPath($unicodeRoot).TrimEnd("\", "/")) -Actual $unicodeResult.result.projectRoot -Message "Unicode project root must round-trip through JSON"
 Assert-Equal -Expected "STATIC_AUDIT_COMPLETE" -Actual $unicodeResult.result.finalStatus -Message "Unicode project path status"
-Assert-AuditContract -Result $unicodeResult.result -Schema $auditSchema
+Assert-AuditContract -Result $unicodeResult.result -SchemaPath $script:SchemaPath
 
 $warningRoot = Copy-FixtureToScratch -Name "unity-with-warnings"
 Initialize-FixtureGitRepository -Root $warningRoot
@@ -592,7 +419,7 @@ Assert-Equal -Expected 2 -Actual $warningResult.result.agentsFiles.Count -Messag
 Assert-Equal -Expected 1 -Actual $warningResult.result.projectSkills.Count -Message "Project-local Skill inventory count"
 Assert-Equal -Expected $warningBefore -Actual $warningAfter -Message "Warning fixture must remain byte-for-byte unchanged"
 Assert-DynamicChecksNotVerified -Result $warningResult.result
-Assert-AuditContract -Result $warningResult.result -Schema $auditSchema
+Assert-AuditContract -Result $warningResult.result -SchemaPath $script:SchemaPath
 
 $malformedRoot = Copy-FixtureToScratch -Name "malformed-manifest"
 Initialize-FixtureGitRepository -Root $malformedRoot
@@ -603,7 +430,7 @@ Assert-Equal -Expected "STATIC_AUDIT_COMPLETE_WITH_WARNINGS" -Actual $malformedR
 Assert-Equal -Expected "INVALID_JSON" -Actual $malformedResult.result.packages.manifest.parseStatus -Message "Malformed manifest parse state"
 Assert-WarningCode -Result $malformedResult.result -Code "MANIFEST_JSON_INVALID"
 Assert-Equal -Expected $malformedBefore -Actual $malformedAfter -Message "Malformed manifest fixture must remain byte-for-byte unchanged"
-Assert-AuditContract -Result $malformedResult.result -Schema $auditSchema
+Assert-AuditContract -Result $malformedResult.result -SchemaPath $script:SchemaPath
 
 $missingSceneRoot = Copy-FixtureToScratch -Name "missing-build-scene"
 Initialize-FixtureGitRepository -Root $missingSceneRoot
@@ -614,7 +441,7 @@ Assert-Equal -Expected "STATIC_AUDIT_COMPLETE_WITH_WARNINGS" -Actual $missingSce
 Assert-WarningCode -Result $missingSceneResult.result -Code "BUILD_SCENE_MISSING"
 Assert-Equal -Expected 1 -Actual $missingSceneResult.result.buildSettings.missingScenes.Count -Message "Missing Build Scene count"
 Assert-Equal -Expected $missingSceneBefore -Actual $missingSceneAfter -Message "Missing Build Scene fixture must remain byte-for-byte unchanged"
-Assert-AuditContract -Result $missingSceneResult.result -Schema $auditSchema
+Assert-AuditContract -Result $missingSceneResult.result -SchemaPath $script:SchemaPath
 
 $junctionRoot = Join-Path $script:ScratchRoot "junction-boundary"
 Copy-Item -LiteralPath (Join-Path $script:FixtureRoot "unity-minimal-clean") -Destination $junctionRoot -Recurse -Force
@@ -631,13 +458,15 @@ New-Item -ItemType Junction -Path (Join-Path $junctionRoot "Assets\ExternalLink"
 $outsideHashBefore = (Get-FileHash -LiteralPath $outsideAsmdef -Algorithm SHA256).Hash
 $junctionResult = Invoke-ScannerProcess -ProjectRoot $junctionRoot
 $outsideHashAfter = (Get-FileHash -LiteralPath $outsideAsmdef -Algorithm SHA256).Hash
+Assert-Equal -Expected "AUDIT_BLOCKED" -Actual $junctionResult.result.finalStatus -Message "Copy-included junction must block the audit fingerprint"
+Assert-True -Condition (@($junctionResult.result.blockedChecks | ForEach-Object code) -contains "PROJECT_FINGERPRINT_BLOCKED") -Message "Junction fingerprint blocker"
 Assert-Equal -Expected "UNSAFE_WORKTREE_LAYOUT" -Actual $junctionResult.result.git.metadataStatus -Message "Junction must disable Git worktree inspection"
 Assert-WarningCode -Result $junctionResult.result -Code "GIT_WORKTREE_REPARSE_POINT"
 Assert-WarningCode -Result $junctionResult.result -Code "REPARSE_POINT_SKIPPED"
 Assert-Equal -Expected 0 -Actual $junctionResult.result.git.changedPaths.Count -Message "Git must not disclose a path behind a junction"
 Assert-True -Condition (-not $junctionResult.json.Contains("OutsideBoundary.Tests.asmdef")) -Message "Scanner JSON must not contain a filename behind a junction"
 Assert-Equal -Expected $outsideHashBefore -Actual $outsideHashAfter -Message "File behind a junction must remain unchanged"
-Assert-AuditContract -Result $junctionResult.result -Schema $auditSchema
+Assert-AuditContract -Result $junctionResult.result -SchemaPath $script:SchemaPath
 
 $blockedTargetRoot = Join-Path $script:ScratchRoot "blocked-root-target"
 Copy-Item -LiteralPath (Join-Path $script:FixtureRoot "unity-minimal-clean") -Destination $blockedTargetRoot -Recurse -Force
@@ -647,7 +476,7 @@ $blockedRootResult = Invoke-ScannerProcess -ProjectRoot $blockedJunctionRoot
 $blockedRootCodes = @($blockedRootResult.result.blockedChecks | ForEach-Object { $_.code })
 Assert-Equal -Expected "AUDIT_BLOCKED" -Actual $blockedRootResult.result.finalStatus -Message "Reparse-point project root status"
 Assert-True -Condition ($blockedRootCodes -contains "PROJECT_ROOT_REPARSE_POINT") -Message "Reparse-point project root blocker"
-Assert-AuditContract -Result $blockedRootResult.result -Schema $auditSchema
+Assert-AuditContract -Result $blockedRootResult.result -SchemaPath $script:SchemaPath
 
 $localExecutableRoot = Join-Path $script:ScratchRoot "project-local-git"
 Copy-Item -LiteralPath (Join-Path $script:FixtureRoot "unity-minimal-clean") -Destination $localExecutableRoot -Recurse -Force
@@ -667,7 +496,7 @@ Assert-Equal -Expected "PROJECT_LOCAL_EXECUTABLE_REFUSED" -Actual $localExecutab
 Assert-WarningCode -Result $localExecutableResult.result -Code "GIT_EXECUTABLE_INSIDE_PROJECT"
 Assert-Equal -Expected 0 -Actual $localExecutableResult.result.git.changedPaths.Count -Message "Project-local Git executable refusal must not produce changed paths"
 Assert-Equal -Expected $localGitHashBefore -Actual $localGitHashAfter -Message "Project-local Git executable must remain untouched"
-Assert-AuditContract -Result $localExecutableResult.result -Schema $auditSchema
+Assert-AuditContract -Result $localExecutableResult.result -SchemaPath $script:SchemaPath
 
 $whatIfDestination = Join-Path $script:ScratchRoot "installer-whatif"
 Invoke-Installer -DestinationRoot $whatIfDestination -WhatIf

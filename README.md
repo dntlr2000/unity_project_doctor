@@ -7,12 +7,24 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 
 | Skill | 버전 | 역할 |
 | --- | --- | --- |
-| `$unity-project-doctor` | 0.2.0 | Unity를 실행하지 않는 완전한 읽기 전용 결정론적 정적 감사 |
-| `$unity-baseline-verification` | 0.1.0 | Doctor JSON을 검증한 뒤 격리 복사본에서만 Unity 6000.0.69f1 스크립트 컴파일 근거 수집 |
+| `$unity-project-doctor` | 0.2.1 | Unity를 실행하지 않는 읽기 전용 정적 감사와 Baseline copy-set fingerprint 생성 |
+| `$unity-baseline-verification` | 0.1.1 | Doctor 전체 schema/fingerprint와 서명된 Unity를 검증한 뒤 격리 복사본에서만 컴파일 근거 수집 |
 
 두 Skill 모두 `allow_implicit_invocation=false`이며 이름을 명시하지 않은 요청에서는 실행되지 않는다. Baseline의 동적 안전 계약과 사용법은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)에 분리되어 있다.
 
-## Unity Project Doctor v0.2.0
+## 0.1.1 hardening과 schema migration
+
+- Doctor scanner 0.2.1은 별도 계약 파일인 `schemaVersion: 1.1.0`을 출력하고, Baseline이 복사하는 파일 집합의 안정된 SHA-256 fingerprint를 포함한다.
+- 기존 `schemas/unity-project-audit.schema.json`의 1.0.0 계약은 수정하지 않았다. 저장된 scanner 0.2.0 결과는 계속 유효한 정적 감사 자료지만 fingerprint가 없어 Baseline 0.1.1에서는 Unity 실행 전에 차단된다.
+- Baseline은 선택된 Doctor schema 전체를 외부 모듈 없이 검사하며 중첩 enum/type/required/additionalProperties 오류의 정확한 JSON path를 반환한다.
+- `file:` package는 상대 경로만 허용되며 절대·UNC·device·authority·encoded escape·excluded tree·reparse 경로는 원본과 격리 양쪽 검증 전에 차단된다.
+- Unity.exe는 ProductVersion뿐 아니라 유효한 Unity Technologies Authenticode signer가 필요하다. 결과에는 회사명, signer subject, certificate thumbprint와 executable SHA-256이 남는다.
+- Unity 프로세스는 suspended 상태로 생성해 kill-on-close Windows Job Object에 먼저 연결한 뒤 재개하며, timeout에는 부모와 자식을 종료하고 active process가 0임을 제한 시간 안에 증명해야 한다.
+- CI의 unsigned fake Unity는 production entrypoint에서 반드시 차단된다. fake 실행은 내부 process/log 회귀 테스트에만 사용된다.
+
+Doctor migration 세부사항은 [Unity Project Doctor 0.2.1 문서](docs/skills/unity-project-doctor.md), Baseline 결과와 안전 계약은 [Unity Baseline Verification 0.1.1 문서](docs/skills/unity-baseline-verification.md)를 참고한다.
+
+## Unity Project Doctor v0.2.1
 
 Unity Project Doctor는 현재 작업 디렉터리를 반복 가능한 JSON으로 검사한다. Unity Editor, Unity Hub, batchmode, compiler, test runner, player build 또는 runtime을 실행하지 않는다.
 
@@ -51,9 +63,12 @@ unity_agent_pipeline/
 ├── VERSION
 ├── docs/
 │   ├── skills/unity-baseline-verification.md
+│   ├── skills/unity-project-doctor.md
+│   ├── validation/v0.1.1-unity-baseline-real-unity-acceptance.md
 │   └── validation/v0.2.0-real-project-acceptance.md
 ├── schemas/
-│   └── unity-project-audit.schema.json
+│   ├── unity-project-audit.schema.json
+│   └── unity-project-audit-1.1.0.schema.json
 ├── scripts/
 │   └── install-codex-skills.ps1
 ├── skills/codex/
@@ -191,7 +206,7 @@ $audit.finalStatus
 
 ## JSON schema 개요
 
-schemaVersion 1.0.0의 기계 판독 가능한 계약은 [unity-project-audit.schema.json](schemas/unity-project-audit.schema.json)에 고정되어 있다. 이 파일은 JSON Schema Draft 2020-12를 사용하며, `v0.2.0` 태그의 raw URL을 `$id`로 갖는다.
+schemaVersion 1.0.0의 동결 계약은 [unity-project-audit.schema.json](schemas/unity-project-audit.schema.json)에 그대로 보존되어 있다. Scanner 0.2.1의 현재 계약은 별도 [unity-project-audit-1.1.0.schema.json](schemas/unity-project-audit-1.1.0.schema.json)이며 `projectFingerprint`를 필수로 추가한다. 두 파일 모두 JSON Schema Draft 2020-12를 사용한다.
 
 최상위 필드는 다음과 같다.
 
@@ -209,6 +224,7 @@ schemaVersion 1.0.0의 기계 판독 가능한 계약은 [unity-project-audit.sc
 | agentsFiles | AGENTS.md path와 directory scope |
 | projectSkills | project-local SKILL.md path, scope, name 및 parse 상태 |
 | trackedGeneratedFolderPaths | Git이 추적하는 generated folder 경로 |
+| projectFingerprint | Baseline copy-set의 canonical path/length/file SHA-256 결속 정보 |
 | warnings | 정적 warning code, check, path 및 message |
 | blockedChecks | 완료할 수 없었던 check와 구체적 이유 |
 | dynamicVerification | compilation, tests, build 및 runtime의 NOT_VERIFIED 상태 |
@@ -291,11 +307,13 @@ Get-ChildItem -Filter *.ps1 -File -Recurse | ForEach-Object {
 }
 ~~~
 
-GitHub Actions의 `static-tests.yml`은 Doctor fixture를, `baseline-static-tests.yml`은 fake Unity executable을 이용한 Baseline 회귀 테스트를 `windows-latest`에서 실행한다. 두 workflow 모두 Unity와 외부 package를 설치하지 않는다.
+GitHub Actions의 `static-tests.yml`은 Doctor fixture/schema/fingerprint를, `baseline-static-tests.yml`은 production unsigned-fake 차단과 내부 Job Object/log 회귀를 `windows-latest`에서 실행한다. 두 workflow 모두 Unity와 외부 package를 설치하지 않으며 테스트 뒤 `git diff`와 `git status`가 깨끗한지 확인한다.
 
 ## 수동 검증
 
 실제 프로젝트 승인 결과는 [v0.2.0 실제 프로젝트 승인 기록](docs/validation/v0.2.0-real-project-acceptance.md)에 정리되어 있다.
+
+Baseline 0.1.1의 실제 Unity 실행 절차는 별도 [v0.1.1 실제 Unity 승인 절차](docs/validation/v0.1.1-unity-baseline-real-unity-acceptance.md)에 정의되어 있다. 이번 hardening 구현에서는 실제 Unity를 실행하지 않았다.
 
 ### 비 Unity 폴더
 
@@ -348,11 +366,13 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 
 ## Baseline과의 책임 경계
 
-`$unity-baseline-verification`은 Doctor에 동적 기능을 추가하지 않는다. 별도 명시적 호출, 별도 Skill 정책 및 별도 종료 상태를 유지하며, Doctor `schemaVersion: 1.0.0` JSON을 입력 계약으로 소비한다.
+`$unity-baseline-verification`은 Doctor에 동적 기능을 추가하지 않는다. 별도 명시적 호출, 별도 Skill 정책 및 별도 종료 상태를 유지하며, Doctor 0.2.1 `schemaVersion: 1.1.0` JSON과 현재 project fingerprint를 입력 계약으로 소비한다. Legacy 1.0.0 JSON은 정적 감사 자료로만 인정하고 실행 근거로 승격하지 않는다.
 
 - Doctor는 원본 Unity 프로젝트를 완전한 읽기 전용으로 정적 감사한다.
 - Baseline은 원본을 해시로 보호하고 외부 임시 위치에 만든 격리 복사본에만 지정된 Unity.exe를 실행한다.
-- Baseline v0.1은 script compilation 근거만 다루며 tests, Player Build, PlayMode 및 runtime은 `NOT_VERIFIED`로 유지한다.
+- Baseline v0.1.1은 script compilation 근거만 다루며 tests, Player Build, PlayMode 및 runtime은 `NOT_VERIFIED`로 유지한다.
 - 어느 Skill도 다른 Skill을 암묵적으로 호출하지 않는다.
 
 자세한 전제조건, 실행 명령, 결과 상태 및 안전 계약은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)를 따른다.
+
+실제 서명된 Unity를 사용하는 검증은 자동 테스트 범위가 아니다. 별도 승인과 경로 확인 후 [v0.1.1 실제 Unity 승인 절차](docs/validation/v0.1.1-unity-baseline-real-unity-acceptance.md)를 따른다.

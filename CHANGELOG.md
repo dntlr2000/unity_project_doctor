@@ -4,6 +4,34 @@
 
 ## Unreleased
 
+### Unity Baseline Verification 0.1.1 hardening
+
+#### Added
+
+- Full no-module JSON Schema validation with exact JSON-path errors for Doctor schema 1.0.0 and 1.1.0 contracts
+- Doctor scanner 0.2.1 copy-set fingerprint evidence and the separate `unity-project-audit-1.1.0.schema.json` contract
+- Source/current/isolated SHA-256 fingerprint binding with two-pass stability checks
+- Strict relative-only `file:` package normalization across source and isolated roots
+- Authenticode publisher evidence for Unity.exe: FileVersion, ProductVersion, CompanyName, signer subject, certificate thumbprint, and SHA-256
+- suspended process creation before Windows Job Object assignment, process-tree timeout termination, and bounded zero-active-process evidence
+- Exact source-project Unity Editor preflight and external, non-reparse artifact/path checks
+- Separate real-Unity 0.1.1 acceptance procedure
+
+#### Changed
+
+- `unity-baseline-verification` component version is now 0.1.1 and its result schemaVersion is 1.1.0; final status names are unchanged
+- `unity-project-doctor` component/scanner version is now 0.2.1 and emits schemaVersion 1.1.0
+- Saved Doctor schema 1.0.0/scanner 0.2.0 JSON remains valid static-audit evidence but is rejected by Baseline because it has no project fingerprint
+- Fake Unity is used only by internal process/log tests; the production entrypoint blocks the unsigned fake with no bypass option
+- Windows CI verifies `git diff` and `git status` after each test suite
+
+#### Security
+
+- Absolute paths are rejected even when they point inside the project; UNC, device, URI-authority, encoded escape, excluded-tree, and reparse package references also block before Unity
+- Timeout handling terminates the assigned Unity process tree and blocks when zero active processes cannot be proven
+- Unity trust is based on a currently valid Unity Technologies Authenticode signer, without a permanent single-thumbprint pin
+- No automatic repair, external installation, test, Player Build, PlayMode, runtime, Unity Hub, or original-project Unity launch was added
+
 ### Added
 
 - 명시적 호출 전용 `unity-baseline-verification` v0.1.0 Skill metadata

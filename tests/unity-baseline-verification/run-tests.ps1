@@ -8,6 +8,11 @@ $ProgressPreference = "SilentlyContinue"
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:RepositoryRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent $PSScriptRoot))).TrimEnd("\", "/")
 $script:VerifierPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
+$script:ScannerPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-project-doctor\scripts\inspect-unity-project.ps1"
+$script:SchemaPath = Join-Path -Path $script:RepositoryRoot -ChildPath "schemas\unity-project-audit-1.1.0.schema.json"
+$script:SchemaValidatorPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1"
+$script:ProcessLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1"
+$script:EditorLogLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1"
 $script:InstallerPath = Join-Path -Path $script:RepositoryRoot -ChildPath "scripts\install-codex-skills.ps1"
 $script:ScratchRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("unity-baseline-verification-tests-" + [guid]::NewGuid().ToString("N"))
 $script:Assertions = 0
@@ -182,106 +187,71 @@ function New-TestUnityProject {
     Write-TestText -Path (Join-Path $projectRoot "Temp\Generated.tmp") -Content "generated-temp"
     Write-TestText -Path (Join-Path $projectRoot "Logs\Editor.log") -Content "historical-log"
     Write-TestText -Path (Join-Path $projectRoot "UserSettings\EditorUserSettings.asset") -Content "user-settings"
-    Write-TestText -Path (Join-Path $projectRoot ".git\config") -Content "[core]"
     $fixtureSkillLines = @("---", "name: fixture", "description: fixture", "---")
     Write-TestText -Path (Join-Path $projectRoot ".agents\skills\fixture\SKILL.md") -Content ([string]::Join([Environment]::NewLine, $fixtureSkillLines))
     return Get-NormalizedPath -Path $projectRoot
 }
 
-# Writes a full Doctor schema 1.0.0 document with selected contract overrides.
+# Runs Doctor 0.2.1 and writes its complete schema 1.1.0 stdout document outside the project.
 function Write-DoctorResult {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
 
         [Parameter(Mandatory = $true)]
-        [string]$ProjectRoot,
-
-        [Parameter()]
-        [string]$ScannerVersion = "0.2.0",
-
-        [Parameter()]
-        [string]$FinalStatus = "STATIC_AUDIT_COMPLETE",
-
-        [Parameter()]
-        [string]$EditorVersion = "6000.0.69f1",
-
-        [Parameter()]
-        [object[]]$Warnings = @(),
-
-        [Parameter()]
-        [object[]]$BlockedChecks = @()
+        [string]$ProjectRoot
     )
 
-    $doctor = [ordered]@{
-        schemaVersion = "1.0.0"
-        scannerVersion = $ScannerVersion
-        projectRoot = Get-NormalizedPath -Path $ProjectRoot
-        projectDetection = [ordered]@{
-            isUnityProject = $true
-            rootStatus = "UNITY_PROJECT"
-            markers = @(
-                [ordered]@{ path = "Assets"; expectedType = "Directory"; status = "PRESENT" },
-                [ordered]@{ path = "Packages"; expectedType = "Directory"; status = "PRESENT" },
-                [ordered]@{ path = "ProjectSettings"; expectedType = "Directory"; status = "PRESENT" },
-                [ordered]@{ path = "ProjectSettings/ProjectVersion.txt"; expectedType = "File"; status = "PRESENT" }
-            )
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = "powershell.exe"
+    $startInfo.Arguments = [string]::Join(" ", [string[]]@(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", ('"' + $script:ScannerPath + '"'),
+        "-ProjectRoot", ('"' + (Get-NormalizedPath -Path $ProjectRoot) + '"')
+    ))
+    $startInfo.WorkingDirectory = $script:RepositoryRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            throw "Doctor fixture process timed out."
         }
-        unityEditorVersion = [ordered]@{
-            source = "ProjectSettings/ProjectVersion.txt"
-            parseStatus = "PARSED"
-            editorVersion = $EditorVersion
-            editorVersionWithRevision = "$EditorVersion (5f8607f5118b)"
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result.Trim()
+        $stderr = $stderrTask.Result.Trim()
+        if ($process.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($stdout)) {
+            throw "Doctor fixture process failed with exit $($process.ExitCode): $stderr"
         }
-        git = [ordered]@{
-            gitAvailable = $false
-            metadataStatus = "NOT_AVAILABLE"
-            worktree = $false
-            topLevel = $null
-            branch = $null
-            detachedHead = $null
-            headCommit = $null
-            dirtyState = "NOT_AVAILABLE"
-            dirty = $null
-            changedPaths = @()
-        }
-        packages = [ordered]@{
-            manifest = [ordered]@{ path = "Packages/manifest.json"; exists = $true; parseStatus = "PARSED"; error = $null }
-            packagesLock = [ordered]@{ path = "Packages/packages-lock.json"; exists = $true; parseStatus = "PARSED"; error = $null }
-            directDependencies = @()
-            resolvedDependencies = @()
-            directDependenciesMissingFromLock = @()
-        }
-        assemblies = [ordered]@{
-            asmdefs = @()
-            confirmedTestAssemblies = @()
-            candidateOnlyTestAssemblies = @()
-        }
-        buildSettings = [ordered]@{
-            path = "ProjectSettings/EditorBuildSettings.asset"
-            exists = $false
-            parseStatus = "MISSING"
-            enabledScenes = @()
-            disabledScenes = @()
-            missingScenes = @()
-        }
-        agentsFiles = @()
-        projectSkills = @()
-        trackedGeneratedFolderPaths = @()
-        warnings = @($Warnings)
-        blockedChecks = @($BlockedChecks)
-        dynamicVerification = [ordered]@{
-            compilation = [ordered]@{ status = "NOT_VERIFIED"; reason = "Unity was not run." }
-            tests = [ordered]@{ status = "NOT_VERIFIED"; reason = "Tests were not run." }
-            build = [ordered]@{ status = "NOT_VERIFIED"; reason = "Build was not run." }
-            runtime = [ordered]@{ status = "NOT_VERIFIED"; reason = "Runtime was not run." }
-        }
-        finalStatus = $FinalStatus
-        evidence = @(
-            [ordered]@{ id = "E001"; check = "projectDetection"; status = "OBSERVED"; source = "fixture"; detail = "Fixture Doctor evidence." }
-        )
+        [void](ConvertFrom-Json -InputObject $stdout -ErrorAction Stop)
+        Write-TestText -Path $Path -Content $stdout
+    } finally {
+        $process.Dispose()
     }
-    $json = ConvertTo-Json -InputObject $doctor -Depth 20 -Compress
+}
+
+# Applies one in-memory mutation to a Doctor JSON fixture and writes it deterministically.
+function Update-DoctorResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Mutation
+    )
+
+    $doctor = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json -ErrorAction Stop
+    & $Mutation $doctor
+    $json = ConvertTo-Json -InputObject $doctor -Depth 30 -Compress
     Write-TestText -Path $Path -Content $json
 }
 
@@ -301,9 +271,11 @@ function New-FakeUnityExecutable {
     $source = @"
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 
 [assembly: AssemblyTitle("Unity")]
 [assembly: AssemblyProduct("Unity")]
@@ -346,6 +318,13 @@ internal static class Program
     // Emits controlled Unity-like arguments, logs, mutations, and exit codes.
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && String.Equals(args[0], "--child", StringComparison.Ordinal))
+        {
+            Thread.Sleep(2500);
+            WriteFile(Environment.GetEnvironmentVariable("FAKE_UNITY_DELAYED_SENTINEL"), "child survived timeout");
+            return 0;
+        }
+
         string argumentsPath = Environment.GetEnvironmentVariable("FAKE_UNITY_ARGUMENTS_PATH");
         WriteFile(argumentsPath, String.Join(Environment.NewLine, args));
 
@@ -353,6 +332,16 @@ internal static class Program
         string editorLogPath = GetOptionValue(args, "-logFile");
         string upmLogPath = GetOptionValue(args, "-upmLogFile");
         string scenario = Environment.GetEnvironmentVariable("FAKE_UNITY_SCENARIO") ?? "success";
+        if (String.Equals(scenario, "parent-child-timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            Thread.Sleep(500);
+            var childStart = new ProcessStartInfo();
+            childStart.FileName = Assembly.GetExecutingAssembly().Location;
+            childStart.Arguments = "--child";
+            childStart.UseShellExecute = false;
+            Process.Start(childStart);
+            Thread.Sleep(Timeout.Infinite);
+        }
         string mutationPath = Environment.GetEnvironmentVariable("FAKE_UNITY_MUTATE_PATH");
         if (!String.IsNullOrWhiteSpace(mutationPath))
         {
@@ -533,36 +522,120 @@ function Remove-TestScratch {
     }
 }
 
-Write-Host "Unity Baseline Verification v0.1 tests"
+# Runs the unsigned fake only through the internal Job Object and shared log-analysis layers.
+function Invoke-InternalFakeUnity {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CaseName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FakeUnityPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$IsolatedProjectPath,
+
+        [Parameter()]
+        [string]$Scenario = 'success',
+
+        [Parameter()]
+        [int]$ExitCode = 0,
+
+        [Parameter()]
+        [int]$TimeoutSeconds = 10,
+
+        [Parameter()]
+        [AllowNull()]
+        [string]$DelayedSentinelPath
+    )
+
+    $caseRoot = Join-Path $script:ScratchRoot ("internal\" + $CaseName)
+    [void][System.IO.Directory]::CreateDirectory($caseRoot)
+    $argumentsPath = Join-Path $caseRoot 'arguments.txt'
+    $editorLogPath = Join-Path $caseRoot 'Editor.log'
+    $upmLogPath = Join-Path $caseRoot 'upm.log'
+    $stdoutPath = Join-Path $caseRoot 'stdout.log'
+    $stderrPath = Join-Path $caseRoot 'stderr.log'
+    $arguments = [string[]]@(
+        '-batchmode', '-nographics', '-quit',
+        '-projectPath', $IsolatedProjectPath,
+        '-logFile', $editorLogPath,
+        '-upmLogFile', $upmLogPath
+    )
+
+    $environmentNames = @('FAKE_UNITY_ARGUMENTS_PATH', 'FAKE_UNITY_SCENARIO', 'FAKE_UNITY_EXIT_CODE', 'FAKE_UNITY_DELAYED_SENTINEL')
+    $previousValues = @{}
+    foreach ($environmentName in $environmentNames) {
+        $previousValues[$environmentName] = [Environment]::GetEnvironmentVariable($environmentName, 'Process')
+    }
+    try {
+        [Environment]::SetEnvironmentVariable('FAKE_UNITY_ARGUMENTS_PATH', $argumentsPath, 'Process')
+        [Environment]::SetEnvironmentVariable('FAKE_UNITY_SCENARIO', $Scenario, 'Process')
+        [Environment]::SetEnvironmentVariable('FAKE_UNITY_EXIT_CODE', [string]$ExitCode, 'Process')
+        [Environment]::SetEnvironmentVariable('FAKE_UNITY_DELAYED_SENTINEL', $DelayedSentinelPath, 'Process')
+        $processResult = Invoke-UnityProcessInJob -ExecutablePath $FakeUnityPath -Arguments $arguments -WorkingDirectory $caseRoot -StandardOutputPath $stdoutPath -StandardErrorPath $stderrPath -TimeoutSeconds $TimeoutSeconds
+        $logAnalysis = Get-UnityEditorLogAnalysis -Path $editorLogPath -ExpectedProjectPath $IsolatedProjectPath -ExpectedUnityVersion '6000.0.69f1'
+    } finally {
+        foreach ($environmentName in $environmentNames) {
+            [Environment]::SetEnvironmentVariable($environmentName, $previousValues[$environmentName], 'Process')
+        }
+    }
+
+    return [pscustomobject][ordered]@{
+        process = $processResult
+        log = $logAnalysis
+        argumentsPath = $argumentsPath
+        editorLogPath = $editorLogPath
+        stdoutPath = $stdoutPath
+        stderrPath = $stderrPath
+    }
+}
+
+Write-Host "Unity Baseline Verification v0.1.1 hardening tests"
 Write-Host "Scratch root: $script:ScratchRoot"
 
 $repositoryBefore = Get-TestTreeSnapshot -Root $script:RepositoryRoot
+$fixtureRoot = Join-Path $script:RepositoryRoot 'tests\fixtures'
+$fixturesBefore = Get-TestTreeSnapshot -Root $fixtureRoot
 [void][System.IO.Directory]::CreateDirectory($script:ScratchRoot)
 
 try {
     foreach ($requiredRelativePath in @(
-        "docs\skills\unity-baseline-verification.md",
-        "CHANGELOG.md",
-        "skills\codex\unity-baseline-verification\VERSION",
-        "skills\codex\unity-baseline-verification\SKILL.md",
-        "skills\codex\unity-baseline-verification\agents\openai.yaml",
-        "skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1",
-        "scripts\install-codex-skills.ps1",
-        "tests\unity-baseline-verification\run-tests.ps1",
-        ".github\workflows\baseline-static-tests.yml"
+        'schemas\unity-project-audit.schema.json',
+        'schemas\unity-project-audit-1.1.0.schema.json',
+        'docs\skills\unity-baseline-verification.md',
+        'docs\skills\unity-project-doctor.md',
+        'docs\validation\v0.1.1-unity-baseline-real-unity-acceptance.md',
+        'CHANGELOG.md',
+        'skills\codex\unity-baseline-verification\VERSION',
+        'skills\codex\unity-baseline-verification\SKILL.md',
+        'skills\codex\unity-baseline-verification\agents\openai.yaml',
+        'skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1',
+        'skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1',
+        'scripts\install-codex-skills.ps1',
+        'tests\unity-baseline-verification\run-tests.ps1',
+        '.github\workflows\baseline-static-tests.yml'
     )) {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot $requiredRelativePath) -PathType Leaf) -Message "Required file $requiredRelativePath"
     }
 
-    Assert-Equal -Expected "0.1.0" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\VERSION")).Trim()) -Message "Baseline Skill VERSION"
-    $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\SKILL.md")
-    Assert-True -Condition ($skillContent -match "^---\r?\nname: unity-baseline-verification\r?\ndescription:") -Message "Skill frontmatter"
-    Assert-True -Condition ($skillContent -match '\$unity-baseline-verification') -Message "Skill explicit invocation text"
-    $agentContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\agents\openai.yaml")
-    Assert-True -Condition ($agentContent -match "(?m)^\s*allow_implicit_invocation:\s*false\s*$") -Message "Implicit invocation policy"
+    Assert-Equal -Expected '0.1.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
+    Assert-Equal -Expected '0.2.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-project-doctor\VERSION')).Trim()) -Message 'Doctor Skill VERSION'
+    $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
+    Assert-True -Condition ($skillContent -match '^---\r?\nname: unity-baseline-verification\r?\ndescription:') -Message 'Skill frontmatter'
+    Assert-True -Condition ($skillContent -match '\$unity-baseline-verification') -Message 'Skill explicit invocation text'
+    $agentContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\agents\openai.yaml')
+    Assert-True -Condition ($agentContent -match '(?m)^\s*allow_implicit_invocation:\s*false\s*$') -Message 'Implicit invocation policy'
+    $verifierContent = Get-Content -Raw -LiteralPath $script:VerifierPath
+    Assert-True -Condition ($verifierContent -notmatch '(?i)SkipSignatureCheck|TestMode') -Message 'Production verifier exposes no trust bypass flag'
+    foreach ($finalStatus in @('BASELINE_VERIFIED', 'BASELINE_FAILED', 'VERIFICATION_BLOCKED', 'ORIGINAL_PROJECT_CHANGED')) {
+        Assert-True -Condition ($verifierContent.Contains($finalStatus)) -Message "Final status remains defined: $finalStatus"
+    }
 
     $parseErrors = New-Object System.Collections.ArrayList
-    foreach ($scriptFile in @(Get-ChildItem -LiteralPath $script:RepositoryRoot -Filter "*.ps1" -File -Recurse)) {
+    foreach ($scriptFile in @(Get-ChildItem -LiteralPath $script:RepositoryRoot -Filter '*.ps1' -File -Recurse)) {
         $tokens = $null
         $errors = $null
         [System.Management.Automation.Language.Parser]::ParseFile($scriptFile.FullName, [ref]$tokens, [ref]$errors) | Out-Null
@@ -570,176 +643,228 @@ try {
             [void]$parseErrors.Add("$($scriptFile.FullName):$($error.Extent.StartLineNumber): $($error.Message)")
         }
     }
-    Assert-Equal -Expected 0 -Actual $parseErrors.Count -Message "PowerShell parse error count"
+    Assert-Equal -Expected 0 -Actual $parseErrors.Count -Message 'PowerShell parse error count'
 
-    $fakeUnity = New-FakeUnityExecutable -OutputPath (Join-Path $script:ScratchRoot "fake-unity\6000.0.69f1\Editor\Unity.exe") -ProductVersion "6000.0.69f1_5f8607f5118b"
+    . $script:SchemaValidatorPath
+    . $script:ProcessLibraryPath
+    . $script:EditorLogLibraryPath
+
+    $fakeUnity = New-FakeUnityExecutable -OutputPath (Join-Path $script:ScratchRoot 'fake-unity\6000.0.69f1\Editor\Unity.exe') -ProductVersion '6000.0.69f1_5f8607f5118b'
     $fakeVersionInfo = (Get-Item -LiteralPath $fakeUnity).VersionInfo
-    Assert-True -Condition ($fakeVersionInfo.ProductVersion.StartsWith("6000.0.69f1", [System.StringComparison]::Ordinal)) -Message "Fake Unity ProductVersion"
+    Assert-True -Condition ($fakeVersionInfo.ProductVersion.StartsWith('6000.0.69f1', [System.StringComparison]::Ordinal)) -Message 'Fake Unity ProductVersion'
+    Assert-Equal -Expected 'NotSigned' -Actual ([string](Get-AuthenticodeSignature -LiteralPath $fakeUnity).Status) -Message 'Fake Unity must remain unsigned'
 
-    $successProject = New-TestUnityProject -Name "success"
-    $successDoctor = Join-Path $script:ScratchRoot "doctor\success.json"
-    $doctorWarning = [ordered]@{ code = "GIT_NOT_WORKTREE"; check = "git"; path = ".git"; message = "Fixture warning." }
-    Write-DoctorResult -Path $successDoctor -ProjectRoot $successProject -FinalStatus "STATIC_AUDIT_COMPLETE_WITH_WARNINGS" -Warnings @($doctorWarning)
-    $successBefore = Get-TestTreeSnapshot -Root $successProject
-    $success = Invoke-Verifier -CaseName "success" -ProjectRoot $successProject -DoctorPath $successDoctor -UnityPath $fakeUnity
-    $successAfter = Get-TestTreeSnapshot -Root $successProject
+    $validProject = New-TestUnityProject -Name 'valid-doctor'
+    $validDoctor = Join-Path $script:ScratchRoot 'doctor\valid.json'
+    Write-DoctorResult -Path $validDoctor -ProjectRoot $validProject
+    $validDoctorObject = Get-Content -Raw -LiteralPath $validDoctor | ConvertFrom-Json
+    $validSchemaErrors = @(Invoke-JsonSchemaValidation -Instance $validDoctorObject -SchemaPath $script:SchemaPath)
+    Assert-Equal -Expected 0 -Actual $validSchemaErrors.Count -Message 'Valid full Doctor output schema errors'
+    Assert-Equal -Expected 'COMPUTED' -Actual $validDoctorObject.projectFingerprint.status -Message 'Doctor fingerprint status'
 
-    Assert-Equal -Expected "BASELINE_VERIFIED" -Actual $success.result.finalStatus -Message "Success final status"
-    Assert-Equal -Expected "VERIFIED_SUCCESS" -Actual $success.result.verification.scriptCompilation.status -Message "Success compilation status"
-    Assert-Equal -Expected "UNCHANGED" -Actual $success.result.originalProjectIntegrity.status -Message "Success original integrity"
-    Assert-Equal -Expected $successBefore -Actual $successAfter -Message "Success source tree unchanged"
-    Assert-Equal -Expected $success.result.originalProjectIntegrity.beforeTreeSha256 -Actual $success.result.originalProjectIntegrity.afterTreeSha256 -Message "Success before and after tree SHA-256"
-    Assert-Equal -Expected $true -Actual $success.result.doctor.accepted -Message "Success Doctor acceptance"
-    Assert-Equal -Expected 1 -Actual $success.result.doctor.warningCount -Message "Doctor warning preservation"
-    Assert-Equal -Expected "6000.0.69f1" -Actual $success.result.unity.detectedExecutableVersion -Message "Executable version"
-    Assert-Equal -Expected "6000.0.69f1" -Actual $success.result.editorLog.detectedUnityVersion -Message "Editor.log version"
-    Assert-Equal -Expected 0 -Actual $success.result.unity.exitCode -Message "Unity exit code"
-    Assert-Equal -Expected $false -Actual $success.result.unity.hubInvoked -Message "Unity Hub not invoked"
-    Assert-Equal -Expected $false -Actual $success.result.unity.commandLineContainsOriginalProject -Message "Original root absent from Unity arguments"
-    Assert-Equal -Expected "NOT_VERIFIED" -Actual $success.result.verification.tests.status -Message "Tests not verified"
-    Assert-Equal -Expected "NOT_VERIFIED" -Actual $success.result.verification.playerBuild.status -Message "Player Build not verified"
-    Assert-Equal -Expected "NOT_VERIFIED" -Actual $success.result.verification.playMode.status -Message "PlayMode not verified"
-    Assert-Equal -Expected "NOT_VERIFIED" -Actual $success.result.verification.runtime.status -Message "Runtime not verified"
-    Assert-True -Condition $success.result.artifacts.resultWritten -Message "Result artifact written"
-    $resultArtifactJson = [System.IO.File]::ReadAllText($success.result.artifacts.resultPath, $script:Utf8NoBom)
-    Assert-Equal -Expected $success.json -Actual $resultArtifactJson -Message "stdout JSON and result artifact match"
+    $secondDoctor = Join-Path $script:ScratchRoot 'doctor\valid-second.json'
+    Write-DoctorResult -Path $secondDoctor -ProjectRoot $validProject
+    $secondDoctorObject = Get-Content -Raw -LiteralPath $secondDoctor | ConvertFrom-Json
+    Assert-Equal -Expected $validDoctorObject.projectFingerprint.treeSha256 -Actual $secondDoctorObject.projectFingerprint.treeSha256 -Message 'Fingerprint determinism'
+    Assert-Equal -Expected $validDoctorObject.projectFingerprint.fileCount -Actual $secondDoctorObject.projectFingerprint.fileCount -Message 'Fingerprint file-count determinism'
 
-    $fakeArguments = @([System.IO.File]::ReadAllLines($success.argumentsPath, $script:Utf8NoBom))
-    Assert-Equal -Expected 9 -Actual $fakeArguments.Count -Message "Fixed Unity argument count"
-    Assert-Equal -Expected "-batchmode" -Actual $fakeArguments[0] -Message "batchmode argument"
-    Assert-Equal -Expected "-nographics" -Actual $fakeArguments[1] -Message "nographics argument"
-    Assert-Equal -Expected "-quit" -Actual $fakeArguments[2] -Message "quit argument"
-    Assert-Equal -Expected "-projectPath" -Actual $fakeArguments[3] -Message "projectPath argument key"
-    Assert-Equal -Expected (Get-NormalizedPath -Path $success.result.isolation.projectCopyPath) -Actual (Get-NormalizedPath -Path $fakeArguments[4]) -Message "isolated project argument value"
-    Assert-Equal -Expected "-logFile" -Actual $fakeArguments[5] -Message "logFile argument key"
-    Assert-Equal -Expected "-upmLogFile" -Actual $fakeArguments[7] -Message "upmLogFile argument key"
-    Assert-True -Condition (-not (Test-PathWithinRoot -Path $fakeArguments[4] -Root $successProject)) -Message "Isolated project is outside original"
-    Assert-True -Condition (-not (Test-PathWithinRoot -Path $fakeArguments[6] -Root $successProject)) -Message "Editor.log is outside original"
-    foreach ($forbiddenArgument in @("-runTests", "-executeMethod", "-accept-apiupdate", "-ignorecompilererrors")) {
-        Assert-True -Condition ($fakeArguments -notcontains $forbiddenArgument) -Message "Forbidden argument absent: $forbiddenArgument"
+    $schemaMutationCases = @(
+        [pscustomobject]@{ name = 'invalid-git-metadata'; path = '$.git.metadataStatus'; mutate = { param($doctor) $doctor.git.metadataStatus = 'INVALID_ENUM' } },
+        [pscustomobject]@{ name = 'invalid-build-parse'; path = '$.buildSettings.parseStatus'; mutate = { param($doctor) $doctor.buildSettings.parseStatus = 'INVALID_ENUM' } },
+        [pscustomobject]@{ name = 'nested-required-missing'; path = '$.projectDetection.rootStatus'; mutate = { param($doctor) $doctor.projectDetection.PSObject.Properties.Remove('rootStatus') } },
+        [pscustomobject]@{ name = 'wrong-nested-type'; path = '$.projectDetection.isUnityProject'; mutate = { param($doctor) $doctor.projectDetection.isUnityProject = 'true' } },
+        [pscustomobject]@{ name = 'nested-extra-property'; path = '$.buildSettings.unexpected'; mutate = { param($doctor) $doctor.buildSettings | Add-Member -NotePropertyName unexpected -NotePropertyValue $true } }
+    )
+    foreach ($schemaCase in $schemaMutationCases) {
+        $caseDoctor = Join-Path $script:ScratchRoot ("doctor\$($schemaCase.name).json")
+        Copy-Item -LiteralPath $validDoctor -Destination $caseDoctor -Force
+        Update-DoctorResult -Path $caseDoctor -Mutation $schemaCase.mutate
+        $caseObject = Get-Content -Raw -LiteralPath $caseDoctor | ConvertFrom-Json
+        $directErrors = @(Invoke-JsonSchemaValidation -Instance $caseObject -SchemaPath $script:SchemaPath)
+        Assert-True -Condition (@($directErrors | ForEach-Object path) -contains $schemaCase.path) -Message "$($schemaCase.name) exact validator path"
+        $caseResult = Invoke-Verifier -CaseName $schemaCase.name -ProjectRoot $validProject -DoctorPath $caseDoctor -UnityPath $fakeUnity
+        Assert-Equal -Expected $false -Actual $caseResult.result.doctor.schemaValidated -Message "$($schemaCase.name) full schema rejected"
+        Assert-Equal -Expected $false -Actual $caseResult.result.unity.processStarted -Message "$($schemaCase.name) processStarted false"
+        Assert-True -Condition (@($caseResult.result.doctor.validationErrors | ForEach-Object path) -contains $schemaCase.path) -Message "$($schemaCase.name) result exact JSON path"
+        Assert-True -Condition (-not (Test-Path -LiteralPath $caseResult.argumentsPath)) -Message "$($schemaCase.name) fake executable not invoked"
     }
 
-    $copyRoot = $success.result.isolation.projectCopyPath
-    foreach ($excludedPath in @("Library", "Temp", "Logs", "UserSettings", ".git", ".agents")) {
-        Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $copyRoot $excludedPath))) -Message "Excluded copy path $excludedPath"
+    $legacyDoctor = Join-Path $script:ScratchRoot 'doctor\legacy-1.0.0.json'
+    Copy-Item -LiteralPath $validDoctor -Destination $legacyDoctor -Force
+    Update-DoctorResult -Path $legacyDoctor -Mutation {
+        param($doctor)
+        $doctor.schemaVersion = '1.0.0'
+        $doctor.scannerVersion = '0.2.0'
+        $doctor.PSObject.Properties.Remove('projectFingerprint')
     }
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $copyRoot "Assets\Scripts\Probe.cs") -PathType Leaf) -Message "Assets copied"
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $copyRoot "Packages\manifest.json") -PathType Leaf) -Message "Packages copied"
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $copyRoot "ProjectSettings\ProjectVersion.txt") -PathType Leaf) -Message "ProjectSettings copied"
+    $legacyResult = Invoke-Verifier -CaseName 'legacy-doctor' -ProjectRoot $validProject -DoctorPath $legacyDoctor -UnityPath $fakeUnity
+    Assert-Equal -Expected $true -Actual $legacyResult.result.doctor.schemaValidated -Message 'Legacy Doctor remains valid static-audit JSON'
+    Assert-Contains -Collection @($legacyResult.result.blockers | ForEach-Object code) -Expected 'DOCTOR_FINGERPRINT_CONTRACT_REQUIRED' -Message 'Legacy Doctor fingerprint migration blocker'
+    Assert-Equal -Expected $false -Actual $legacyResult.result.unity.processStarted -Message 'Legacy Doctor prevents Unity'
 
-    $compilerProject = New-TestUnityProject -Name "compiler-error"
-    $compilerDoctor = Join-Path $script:ScratchRoot "doctor\compiler-error.json"
-    Write-DoctorResult -Path $compilerDoctor -ProjectRoot $compilerProject
-    $compiler = Invoke-Verifier -CaseName "compiler-error" -ProjectRoot $compilerProject -DoctorPath $compilerDoctor -UnityPath $fakeUnity -Scenario "compiler-error"
-    Assert-Equal -Expected "BASELINE_FAILED" -Actual $compiler.result.finalStatus -Message "Compiler error final status"
-    Assert-Equal -Expected "VERIFIED_FAILURE" -Actual $compiler.result.verification.scriptCompilation.status -Message "Compiler error verification status"
-    Assert-True -Condition ($compiler.result.editorLog.compilerErrorCount -gt 0) -Message "Compiler error captured"
-    Assert-Equal -Expected "UNCHANGED" -Actual $compiler.result.originalProjectIntegrity.status -Message "Compiler error original integrity"
+    $validBefore = Get-TestTreeSnapshot -Root $validProject
+    $unsignedProduction = Invoke-Verifier -CaseName 'unsigned-production' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity
+    $validAfter = Get-TestTreeSnapshot -Root $validProject
+    Assert-Equal -Expected 'VERIFICATION_BLOCKED' -Actual $unsignedProduction.result.finalStatus -Message 'Unsigned production final status'
+    Assert-Equal -Expected '1.1.0' -Actual $unsignedProduction.result.schemaVersion -Message 'Baseline result schema version'
+    Assert-Equal -Expected '0.1.1' -Actual $unsignedProduction.result.verifierVersion -Message 'Baseline verifier version'
+    Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.accepted -Message 'Valid full Doctor accepted'
+    Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.fingerprintMatched -Message 'Doctor/current fingerprint matched'
+    Assert-Equal -Expected $false -Actual $unsignedProduction.result.unity.processStarted -Message 'Unsigned fake blocked before process start'
+    Assert-Equal -Expected 'NotSigned' -Actual $unsignedProduction.result.unity.signatureStatus -Message 'Unsigned signature evidence'
+    Assert-True -Condition (-not [string]::IsNullOrWhiteSpace([string]$unsignedProduction.result.unity.fileVersion)) -Message 'FileVersion evidence recorded'
+    Assert-True -Condition ([string]$unsignedProduction.result.unity.productVersion -like '6000.0.69f1*') -Message 'ProductVersion evidence recorded'
+    Assert-Equal -Expected 'Fixture' -Actual $unsignedProduction.result.unity.companyName -Message 'CompanyName evidence recorded'
+    Assert-Equal -Expected 64 -Actual ([string]$unsignedProduction.result.unity.executableSha256).Length -Message 'Executable SHA-256 evidence recorded'
+    Assert-True -Condition ($null -eq $unsignedProduction.result.unity.signerSubject) -Message 'Unsigned fake has no signer subject'
+    Assert-True -Condition ($null -eq $unsignedProduction.result.unity.certificateThumbprint) -Message 'Unsigned fake has no certificate thumbprint'
+    Assert-Contains -Collection @($unsignedProduction.result.blockers | ForEach-Object code) -Expected 'UNITY_EXECUTABLE_SIGNATURE_INVALID' -Message 'Unsigned fake production blocker'
+    Assert-Equal -Expected $validBefore -Actual $validAfter -Message 'Production rejection leaves source project unchanged'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $unsignedProduction.argumentsPath)) -Message 'Unsigned production fake has no invocation arguments'
+    Assert-True -Condition $unsignedProduction.result.artifacts.resultWritten -Message 'Blocked result artifact written externally'
+    Assert-Equal -Expected $unsignedProduction.json -Actual ([System.IO.File]::ReadAllText($unsignedProduction.result.artifacts.resultPath, $script:Utf8NoBom)) -Message 'stdout is the exact one result artifact JSON'
+    foreach ($scopeName in @('tests', 'playerBuild', 'playMode', 'runtime')) {
+        Assert-Equal -Expected 'NOT_VERIFIED' -Actual $unsignedProduction.result.verification.$scopeName.status -Message "$scopeName remains NOT_VERIFIED"
+    }
 
-    $exitProject = New-TestUnityProject -Name "nonzero-exit"
-    $exitDoctor = Join-Path $script:ScratchRoot "doctor\nonzero-exit.json"
-    Write-DoctorResult -Path $exitDoctor -ProjectRoot $exitProject
-    $exitFailure = Invoke-Verifier -CaseName "nonzero-exit" -ProjectRoot $exitProject -DoctorPath $exitDoctor -UnityPath $fakeUnity -FakeExitCode 17
-    Assert-Equal -Expected "BASELINE_FAILED" -Actual $exitFailure.result.finalStatus -Message "Nonzero exit final status"
-    Assert-Equal -Expected 17 -Actual $exitFailure.result.unity.exitCode -Message "Nonzero exit preserved"
-    Assert-Equal -Expected "VERIFIED_FAILURE" -Actual $exitFailure.result.verification.scriptCompilation.status -Message "Nonzero exit verification status"
+    $mismatchProject = New-TestUnityProject -Name 'fingerprint-mismatch'
+    $mismatchDoctor = Join-Path $script:ScratchRoot 'doctor\fingerprint-mismatch.json'
+    Write-DoctorResult -Path $mismatchDoctor -ProjectRoot $mismatchProject
+    Write-TestText -Path (Join-Path $mismatchProject 'Assets\Scripts\AfterDoctor.cs') -Content 'public sealed class AfterDoctor {}'
+    $mismatchResult = Invoke-Verifier -CaseName 'fingerprint-mismatch' -ProjectRoot $mismatchProject -DoctorPath $mismatchDoctor -UnityPath $fakeUnity
+    Assert-Equal -Expected $false -Actual $mismatchResult.result.doctor.fingerprintMatched -Message 'Changed source fingerprint mismatch'
+    Assert-Contains -Collection @($mismatchResult.result.blockers | ForEach-Object code) -Expected 'DOCTOR_PROJECT_FINGERPRINT_MISMATCH' -Message 'Fingerprint mismatch blocker'
+    Assert-Equal -Expected $false -Actual $mismatchResult.result.unity.processStarted -Message 'Fingerprint mismatch prevents Unity'
 
-    $inconclusiveProject = New-TestUnityProject -Name "inconclusive"
-    $inconclusiveDoctor = Join-Path $script:ScratchRoot "doctor\inconclusive.json"
-    Write-DoctorResult -Path $inconclusiveDoctor -ProjectRoot $inconclusiveProject
-    $inconclusive = Invoke-Verifier -CaseName "inconclusive" -ProjectRoot $inconclusiveProject -DoctorPath $inconclusiveDoctor -UnityPath $fakeUnity -Scenario "inconclusive"
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $inconclusive.result.finalStatus -Message "Inconclusive final status"
-    Assert-Equal -Expected "NOT_VERIFIED" -Actual $inconclusive.result.verification.scriptCompilation.status -Message "Inconclusive compilation status"
-    Assert-Contains -Collection @($inconclusive.result.blockers | ForEach-Object code) -Expected "EDITOR_LOG_INCONCLUSIVE" -Message "Inconclusive blocker"
+    $packageCases = New-Object System.Collections.ArrayList
 
-    $missingLogProject = New-TestUnityProject -Name "missing-log"
-    $missingLogDoctor = Join-Path $script:ScratchRoot "doctor\missing-log.json"
-    Write-DoctorResult -Path $missingLogDoctor -ProjectRoot $missingLogProject
-    $missingLog = Invoke-Verifier -CaseName "missing-log" -ProjectRoot $missingLogProject -DoctorPath $missingLogDoctor -UnityPath $fakeUnity -Scenario "no-log"
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $missingLog.result.finalStatus -Message "Missing log final status"
-    Assert-Equal -Expected $false -Actual $missingLog.result.editorLog.exists -Message "Missing Editor.log evidence"
-    Assert-Contains -Collection @($missingLog.result.blockers | ForEach-Object code) -Expected "EDITOR_LOG_MISSING" -Message "Missing log blocker"
+    $absoluteProject = New-TestUnityProject -Name 'package-absolute'
+    Write-TestText -Path (Join-Path $absoluteProject 'LocalPackages\Safe\package.json') -Content '{"name":"com.example.safe","version":"1.0.0"}'
+    $absoluteReference = 'file:' + (Join-Path $absoluteProject 'LocalPackages\Safe')
+    Write-TestText -Path (Join-Path $absoluteProject 'Packages\manifest.json') -Content (([ordered]@{ dependencies = [ordered]@{ 'com.example.safe' = $absoluteReference } } | ConvertTo-Json -Compress))
+    [void]$packageCases.Add([pscustomobject]@{ name = 'package-absolute'; project = $absoluteProject; code = 'LOCAL_PACKAGE_ABSOLUTE_PATH_FORBIDDEN' })
 
-    $doctorRejectedProject = New-TestUnityProject -Name "doctor-rejected"
-    $doctorRejectedPath = Join-Path $script:ScratchRoot "doctor\rejected.json"
-    Write-DoctorResult -Path $doctorRejectedPath -ProjectRoot $doctorRejectedProject -ScannerVersion "0.3.0"
-    $doctorRejected = Invoke-Verifier -CaseName "doctor-rejected" -ProjectRoot $doctorRejectedProject -DoctorPath $doctorRejectedPath -UnityPath $fakeUnity
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $doctorRejected.result.finalStatus -Message "Rejected Doctor final status"
-    Assert-Equal -Expected $false -Actual $doctorRejected.result.doctor.accepted -Message "Rejected Doctor acceptance"
-    Assert-Equal -Expected $false -Actual $doctorRejected.result.unity.processStarted -Message "Rejected Doctor prevents Unity"
-    Assert-True -Condition (-not (Test-Path -LiteralPath $doctorRejected.argumentsPath)) -Message "Rejected Doctor has no fake Unity invocation"
-    Assert-Contains -Collection @($doctorRejected.result.blockers | ForEach-Object code) -Expected "DOCTOR_SCANNER_VERSION_MISMATCH" -Message "Doctor scanner version blocker"
+    $outsideProject = New-TestUnityProject -Name 'package-outside-relative' -ManifestContent '{"dependencies":{"com.example.outside":"file:../../outside-package"}}'
+    [void]$packageCases.Add([pscustomobject]@{ name = 'package-outside-relative'; project = $outsideProject; code = 'LOCAL_PACKAGE_OUTSIDE_PROJECT' })
 
-    $blockedDoctorProject = New-TestUnityProject -Name "doctor-blocked"
-    $blockedDoctorPath = Join-Path $script:ScratchRoot "doctor\blocked.json"
-    $blockedCheck = [ordered]@{ code = "FIXTURE_BLOCK"; check = "fixture"; path = $null; message = "Fixture blocker." }
-    Write-DoctorResult -Path $blockedDoctorPath -ProjectRoot $blockedDoctorProject -FinalStatus "AUDIT_BLOCKED" -BlockedChecks @($blockedCheck)
-    $blockedDoctor = Invoke-Verifier -CaseName "doctor-blocked" -ProjectRoot $blockedDoctorProject -DoctorPath $blockedDoctorPath -UnityPath $fakeUnity
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $blockedDoctor.result.finalStatus -Message "Blocked Doctor final status"
-    Assert-Equal -Expected $false -Actual $blockedDoctor.result.unity.processStarted -Message "Blocked Doctor prevents Unity"
-    Assert-Contains -Collection @($blockedDoctor.result.blockers | ForEach-Object code) -Expected "DOCTOR_FINAL_STATUS_REJECTED" -Message "Doctor final status blocker"
-    Assert-Contains -Collection @($blockedDoctor.result.blockers | ForEach-Object code) -Expected "DOCTOR_BLOCKED_CHECKS_PRESENT" -Message "Doctor blocked-check blocker"
+    $uncProject = New-TestUnityProject -Name 'package-unc' -ManifestContent '{"dependencies":{"com.example.unc":"file://server/share/package"}}'
+    [void]$packageCases.Add([pscustomobject]@{ name = 'package-unc'; project = $uncProject; code = 'LOCAL_PACKAGE_AUTHORITY_OR_DEVICE_PATH' })
 
-    $wrongUnity = New-FakeUnityExecutable -OutputPath (Join-Path $script:ScratchRoot "fake-unity\6000.0.68f1\Editor\Unity.exe") -ProductVersion "6000.0.68f1_wrong"
-    $wrongVersionProject = New-TestUnityProject -Name "wrong-unity"
-    $wrongVersionDoctor = Join-Path $script:ScratchRoot "doctor\wrong-unity.json"
-    Write-DoctorResult -Path $wrongVersionDoctor -ProjectRoot $wrongVersionProject
-    $wrongVersion = Invoke-Verifier -CaseName "wrong-unity" -ProjectRoot $wrongVersionProject -DoctorPath $wrongVersionDoctor -UnityPath $wrongUnity
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $wrongVersion.result.finalStatus -Message "Wrong Unity final status"
-    Assert-Equal -Expected $false -Actual $wrongVersion.result.unity.processStarted -Message "Wrong Unity prevents process"
-    Assert-Contains -Collection @($wrongVersion.result.blockers | ForEach-Object code) -Expected "UNITY_EXECUTABLE_VERSION_MISMATCH" -Message "Wrong Unity version blocker"
+    $encodedProject = New-TestUnityProject -Name 'package-encoded' -ManifestContent '{"dependencies":{"com.example.encoded":"file:%252e%252e%252f%252e%252e%252foutside"}}'
+    [void]$packageCases.Add([pscustomobject]@{ name = 'package-encoded'; project = $encodedProject; code = 'LOCAL_PACKAGE_OUTSIDE_PROJECT' })
 
-    $externalPackageProject = New-TestUnityProject -Name "external-package" -ManifestContent '{"dependencies":{"com.example.local":"file:../../outside-package"}}'
-    $externalPackageDoctor = Join-Path $script:ScratchRoot "doctor\external-package.json"
-    Write-DoctorResult -Path $externalPackageDoctor -ProjectRoot $externalPackageProject
-    $externalPackage = Invoke-Verifier -CaseName "external-package" -ProjectRoot $externalPackageProject -DoctorPath $externalPackageDoctor -UnityPath $fakeUnity
-    Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $externalPackage.result.finalStatus -Message "External local package final status"
-    Assert-Equal -Expected $false -Actual $externalPackage.result.unity.processStarted -Message "External local package prevents Unity"
-    Assert-Contains -Collection @($externalPackage.result.blockers | ForEach-Object code) -Expected "LOCAL_PACKAGE_OUTSIDE_PROJECT" -Message "External local package blocker"
-    Assert-Equal -Expected "UNCHANGED" -Actual $externalPackage.result.originalProjectIntegrity.status -Message "External package project unchanged"
+    $excludedProject = New-TestUnityProject -Name 'package-excluded' -ManifestContent '{"dependencies":{"com.example.excluded":"file:../Library/LocalPackage"}}'
+    Write-TestText -Path (Join-Path $excludedProject 'Library\LocalPackage\package.json') -Content '{"name":"com.example.excluded","version":"1.0.0"}'
+    [void]$packageCases.Add([pscustomobject]@{ name = 'package-excluded'; project = $excludedProject; code = 'LOCAL_PACKAGE_EXCLUDED_FROM_COPY' })
 
-    $mutationProject = New-TestUnityProject -Name "original-mutation"
-    $mutationDoctor = Join-Path $script:ScratchRoot "doctor\original-mutation.json"
-    Write-DoctorResult -Path $mutationDoctor -ProjectRoot $mutationProject
-    $mutationPath = Join-Path -Path $mutationProject -ChildPath "Assets\MutatedByFakeUnity.txt"
-    $mutation = Invoke-Verifier -CaseName "original-mutation" -ProjectRoot $mutationProject -DoctorPath $mutationDoctor -UnityPath $fakeUnity -MutationPath $mutationPath
-    Assert-Equal -Expected "ORIGINAL_PROJECT_CHANGED" -Actual $mutation.result.finalStatus -Message "Original mutation final status"
-    Assert-Equal -Expected "CHANGED" -Actual $mutation.result.originalProjectIntegrity.status -Message "Original mutation integrity status"
-    Assert-Contains -Collection @($mutation.result.originalProjectIntegrity.addedFiles) -Expected "Assets/MutatedByFakeUnity.txt" -Message "Original added file reported"
-    Assert-True -Condition (Test-Path -LiteralPath $mutationPath -PathType Leaf) -Message "Verifier did not automatically roll back mutation"
+    foreach ($packageCase in @($packageCases)) {
+        $doctorPath = Join-Path $script:ScratchRoot ("doctor\$($packageCase.name).json")
+        Write-DoctorResult -Path $doctorPath -ProjectRoot $packageCase.project
+        $packageResult = Invoke-Verifier -CaseName $packageCase.name -ProjectRoot $packageCase.project -DoctorPath $doctorPath -UnityPath $fakeUnity
+        Assert-Contains -Collection @($packageResult.result.blockers | ForEach-Object code) -Expected $packageCase.code -Message "$($packageCase.name) blocker"
+        Assert-Equal -Expected $false -Actual $packageResult.result.unity.processStarted -Message "$($packageCase.name) prevents Unity"
+    }
 
-    $whatIfDestination = Join-Path $script:ScratchRoot "installer-whatif\skills"
+    $safePackageProject = New-TestUnityProject -Name 'package-safe-relative' -ManifestContent '{"dependencies":{"com.example.safe":"file:../LocalPackages/Safe"}}'
+    Write-TestText -Path (Join-Path $safePackageProject 'LocalPackages\Safe\package.json') -Content '{"name":"com.example.safe","version":"1.0.0"}'
+    $safePackageDoctor = Join-Path $script:ScratchRoot 'doctor\package-safe-relative.json'
+    Write-DoctorResult -Path $safePackageDoctor -ProjectRoot $safePackageProject
+    $safePackageResult = Invoke-Verifier -CaseName 'package-safe-relative' -ProjectRoot $safePackageProject -DoctorPath $safePackageDoctor -UnityPath $fakeUnity
+    $safePackageBlockers = @($safePackageResult.result.blockers | ForEach-Object code | Where-Object { $_ -like 'LOCAL_PACKAGE_*' })
+    Assert-Equal -Expected 0 -Actual $safePackageBlockers.Count -Message 'Safe relative package has no package blocker'
+    Assert-Equal -Expected 1 -Actual $safePackageResult.result.isolation.localPackageReferences.Count -Message 'Safe relative package normalization record'
+    Assert-Equal -Expected 'LocalPackages/Safe' -Actual $safePackageResult.result.isolation.localPackageReferences[0].projectRelativePath -Message 'Safe relative project path'
+
+    $reparseProject = New-TestUnityProject -Name 'package-reparse' -ManifestContent '{"dependencies":{"com.example.linked":"file:../LocalPackages/Linked"}}'
+    $reparseTarget = Join-Path $script:ScratchRoot 'outside-reparse-package'
+    [void][System.IO.Directory]::CreateDirectory($reparseTarget)
+    Write-TestText -Path (Join-Path $reparseTarget 'package.json') -Content '{"name":"com.example.linked","version":"1.0.0"}'
+    [void][System.IO.Directory]::CreateDirectory((Join-Path $reparseProject 'LocalPackages'))
+    $reparseCreated = $false
+    try {
+        New-Item -ItemType Junction -Path (Join-Path $reparseProject 'LocalPackages\Linked') -Target $reparseTarget -ErrorAction Stop | Out-Null
+        $reparseCreated = $true
+    } catch {
+        throw "Local-package reparse fixture could not be created: $($_.Exception.Message)"
+    }
+    if ($reparseCreated) {
+        $reparseDoctor = Join-Path $script:ScratchRoot 'doctor\package-reparse.json'
+        Write-DoctorResult -Path $reparseDoctor -ProjectRoot $reparseProject
+        $reparseResult = Invoke-Verifier -CaseName 'package-reparse' -ProjectRoot $reparseProject -DoctorPath $reparseDoctor -UnityPath $fakeUnity
+        Assert-Contains -Collection @($reparseResult.result.blockers | ForEach-Object code) -Expected 'LOCAL_PACKAGE_REPARSE_POINT' -Message 'Reparse package blocker'
+        Assert-Equal -Expected $false -Actual $reparseResult.result.unity.processStarted -Message 'Reparse package prevents Unity'
+    }
+
+    $internalProject = New-TestUnityProject -Name 'internal-process-project'
+    $internalSuccess = Invoke-InternalFakeUnity -CaseName 'success' -FakeUnityPath $fakeUnity -IsolatedProjectPath $internalProject
+    Assert-Equal -Expected $true -Actual $internalSuccess.process.processStarted -Message 'Internal fake process started'
+    Assert-Equal -Expected 0 -Actual $internalSuccess.process.exitCode -Message 'Internal fake exit code'
+    Assert-Equal -Expected $true -Actual $internalSuccess.process.processTreeExitVerified -Message 'Internal process tree exit verified'
+    Assert-Equal -Expected 'SUCCESS' -Actual $internalSuccess.log.classification -Message 'Shared Editor.log success classification'
+    $internalArguments = @([System.IO.File]::ReadAllLines($internalSuccess.argumentsPath, $script:Utf8NoBom))
+    Assert-Equal -Expected 9 -Actual $internalArguments.Count -Message 'Internal fixed Unity argument count'
+    Assert-Equal -Expected '-batchmode' -Actual $internalArguments[0] -Message 'Internal batchmode argument'
+    Assert-Equal -Expected '-projectPath' -Actual $internalArguments[3] -Message 'Internal projectPath argument key'
+    Assert-Equal -Expected (Get-NormalizedPath -Path $internalProject) -Actual (Get-NormalizedPath -Path $internalArguments[4]) -Message 'Internal projectPath argument value'
+    foreach ($forbiddenArgument in @('-runTests', '-executeMethod', '-accept-apiupdate', '-ignorecompilererrors')) {
+        Assert-True -Condition ($internalArguments -notcontains $forbiddenArgument) -Message "Internal forbidden argument absent: $forbiddenArgument"
+    }
+
+    $internalCompiler = Invoke-InternalFakeUnity -CaseName 'compiler-error' -FakeUnityPath $fakeUnity -IsolatedProjectPath $internalProject -Scenario 'compiler-error'
+    Assert-Equal -Expected 'FAILURE' -Actual $internalCompiler.log.classification -Message 'Shared Editor.log compiler failure classification'
+    Assert-True -Condition ($internalCompiler.log.compilerErrorCount -gt 0) -Message 'Compiler error captured'
+
+    $internalExit = Invoke-InternalFakeUnity -CaseName 'nonzero-exit' -FakeUnityPath $fakeUnity -IsolatedProjectPath $internalProject -ExitCode 17
+    Assert-Equal -Expected 17 -Actual $internalExit.process.exitCode -Message 'Internal nonzero exit preserved'
+
+    $delayedSentinel = Join-Path $script:ScratchRoot 'internal\timeout\delayed-sentinel.txt'
+    $internalTimeout = Invoke-InternalFakeUnity -CaseName 'timeout' -FakeUnityPath $fakeUnity -IsolatedProjectPath $internalProject -Scenario 'parent-child-timeout' -TimeoutSeconds 1 -DelayedSentinelPath $delayedSentinel
+    Assert-Equal -Expected $true -Actual $internalTimeout.process.timedOut -Message 'Internal parent/child timeout observed'
+    Assert-Equal -Expected $true -Actual $internalTimeout.process.terminationRequested -Message 'Timeout requested Job Object termination'
+    Assert-Equal -Expected $true -Actual $internalTimeout.process.terminationApiSucceeded -Message 'Job Object termination API succeeded'
+    Assert-Equal -Expected $true -Actual $internalTimeout.process.processTreeExitVerified -Message 'Parent and child process tree exited'
+    Assert-Equal -Expected 0 -Actual $internalTimeout.process.activeProcessCountAfterWait -Message 'Job Object active process count after timeout'
+    Start-Sleep -Milliseconds 3000
+    Assert-True -Condition (-not (Test-Path -LiteralPath $delayedSentinel)) -Message 'Killed child cannot create delayed sentinel'
+    foreach ($artifactPath in @($internalTimeout.editorLogPath, $internalTimeout.stdoutPath, $internalTimeout.stderrPath)) {
+        Assert-True -Condition (Test-PathWithinRoot -Path $artifactPath -Root ([System.IO.Path]::GetTempPath())) -Message 'Internal process artifact stays in system temp'
+        Assert-True -Condition (-not (Test-PathWithinRoot -Path $artifactPath -Root $script:RepositoryRoot)) -Message 'Internal process artifact stays outside repository'
+    }
+
+    $whatIfDestination = Join-Path $script:ScratchRoot 'installer-whatif\skills'
     & $script:InstallerPath -DestinationRoot $whatIfDestination -WhatIf | Out-Null
-    Assert-True -Condition (-not (Test-Path -LiteralPath $whatIfDestination)) -Message "Installer WhatIf makes no destination"
+    Assert-True -Condition (-not (Test-Path -LiteralPath $whatIfDestination)) -Message 'Installer WhatIf makes no destination'
 
     if (Test-SymbolicLinkCapability) {
-        $installDestination = Join-Path $script:ScratchRoot "installer\skills"
+        $installDestination = Join-Path $script:ScratchRoot 'installer\skills'
         & $script:InstallerPath -DestinationRoot $installDestination | Out-Null
-        $installedLink = Join-Path $installDestination "unity-baseline-verification"
-        Assert-True -Condition (Test-Path -LiteralPath $installedLink -PathType Container) -Message "Installer creates Skill link"
+        $installedLink = Join-Path $installDestination 'unity-baseline-verification'
+        Assert-True -Condition (Test-Path -LiteralPath $installedLink -PathType Container) -Message 'Installer creates Skill link'
         $linkEntry = Get-Item -LiteralPath $installedLink -Force
-        Assert-Equal -Expected "SymbolicLink" -Actual $linkEntry.LinkType -Message "Installer link type"
+        Assert-Equal -Expected 'SymbolicLink' -Actual $linkEntry.LinkType -Message 'Installer link type'
         & $script:InstallerPath -DestinationRoot $installDestination | Out-Null
         $linkEntryAgain = Get-Item -LiteralPath $installedLink -Force
-        Assert-Equal -Expected "SymbolicLink" -Actual $linkEntryAgain.LinkType -Message "Installer idempotency"
+        Assert-Equal -Expected 'SymbolicLink' -Actual $linkEntryAgain.LinkType -Message 'Installer idempotency'
     } else {
-        Write-Host "Symbolic-link creation tests skipped because this token lacks the required Windows privilege."
+        Write-Host 'Symbolic-link creation tests skipped because this token lacks the required Windows privilege.'
     }
 
-    $conflictDestination = Join-Path $script:ScratchRoot "installer-conflict\skills"
-    $conflictPath = Join-Path $conflictDestination "unity-baseline-verification"
-    Write-TestText -Path (Join-Path $conflictPath "marker.txt") -Content "preserve"
+    $conflictDestination = Join-Path $script:ScratchRoot 'installer-conflict\skills'
+    $conflictPath = Join-Path $conflictDestination 'unity-baseline-verification'
+    Write-TestText -Path (Join-Path $conflictPath 'marker.txt') -Content 'preserve'
     $conflictThrown = $false
     try {
         & $script:InstallerPath -DestinationRoot $conflictDestination -WarningAction SilentlyContinue | Out-Null
     } catch {
         $conflictThrown = $true
     }
-    Assert-True -Condition $conflictThrown -Message "Installer rejects conflict"
-    Assert-Equal -Expected "preserve" -Actual ([System.IO.File]::ReadAllText((Join-Path $conflictPath "marker.txt"), $script:Utf8NoBom)) -Message "Installer preserves conflict"
+    Assert-True -Condition $conflictThrown -Message 'Installer rejects conflict'
+    Assert-Equal -Expected 'preserve' -Actual ([System.IO.File]::ReadAllText((Join-Path $conflictPath 'marker.txt'), $script:Utf8NoBom)) -Message 'Installer preserves conflict'
 
+    $fixturesAfter = Get-TestTreeSnapshot -Root $fixtureRoot
+    Assert-Equal -Expected $fixturesBefore -Actual $fixturesAfter -Message 'Fixture file list and hashes remain unchanged'
     $repositoryAfter = Get-TestTreeSnapshot -Root $script:RepositoryRoot
-    Assert-Equal -Expected $repositoryBefore -Actual $repositoryAfter -Message "Test suite leaves repository byte-for-byte unchanged"
+    Assert-Equal -Expected $repositoryBefore -Actual $repositoryAfter -Message 'Test suite leaves repository byte-for-byte unchanged'
 
     $script:TestsPassed = $true
     Write-Host "All tests passed. Assertions: $($script:Assertions)"

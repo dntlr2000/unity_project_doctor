@@ -22,3 +22,13 @@ jobs:
       - name: Run PowerShell fixture tests
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+
+      - name: Verify checkout remained unchanged
+        shell: powershell
+        run: |
+          git diff --exit-code
+          $status = @(git status --short --untracked-files=all)
+          if ($status.Count -ne 0) {
+            $status | Write-Host
+            throw "Static tests changed the checkout."
+          }
