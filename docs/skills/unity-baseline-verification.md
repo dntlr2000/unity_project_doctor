@@ -1,6 +1,6 @@
-# Unity Baseline Verification 0.1.2
+# Unity Baseline Verification 0.2.0
 
-Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. It fully validates Doctor evidence, binds that evidence to current content, copies only the approved file set to an external temporary session, and runs only a trusted Unity.exe against that copy.
+Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. Component 0.2.0 adds a one-command orchestration layer that creates fresh Doctor evidence and resolves the exact Unity executable before delegating to the unchanged, approved low-level verifier 0.1.2.
 
 Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
 
@@ -8,14 +8,81 @@ Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
 
 - The literal name `$unity-baseline-verification` is required.
 - `policy.allow_implicit_invocation` is `false`.
-- The Skill does not invoke `$unity-project-doctor` implicitly.
+- The Skill does not invoke `$unity-project-doctor` implicitly. Its orchestrator calls the bundled sibling scanner script directly as a pipeline component.
 - It performs import and script-compilation evidence collection only.
 - It never runs tests, a Player Build, PlayMode, scenes, players, or runtime behavior.
+
+## One-command flow
+
+From an exact Unity project root, explicitly invoke:
+
+~~~text
+$unity-baseline-verification으로 현재 프로젝트를 검증해.
+~~~
+
+The Skill runs this entrypoint without requiring a pre-created Doctor file or Unity.exe path:
+
+~~~powershell
+$entrypoint = "<skill-root>\scripts\invoke-unity-baseline-verification.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entrypoint `
+  -ProjectRoot (Get-Location).Path `
+  -Pretty
+~~~
+
+The orchestrator performs only this handoff:
+
+~~~text
+exact ProjectRoot
+→ bundled Doctor scanner child process
+→ raw external Doctor JSON and stderr log
+→ exact-version Unity.exe resolution
+→ approved verify-unity-baseline.ps1 child process
+→ unchanged verifier JSON stdout
+~~~
+
+It does not implement Doctor schema validation, fingerprints, executable trust, Unity process control, Editor.log classification, source integrity, or final status. Those remain exclusively in `verify-unity-baseline.ps1`.
+
+## Unity.exe resolution
+
+For Doctor editor version `6000.0.69f1`, candidates are evaluated deterministically:
+
+1. Explicit `-UnityExecutable` override.
+2. Exact executable in `UNITY_EDITOR_PATH`.
+3. `UNITY_HUB_EDITOR_ROOT\6000.0.69f1\Editor\Unity.exe`.
+4. `%ProgramFiles%\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe`.
+5. `%ProgramFiles(x86)%\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe`.
+
+An explicit override is authoritative; an invalid override is preserved for structured verifier evidence instead of silently falling back. Automatic candidates must exist and must not traverse a reparse point. Discovery never launches Unity Hub, reads a registry key, recursively searches a drive, installs Unity, or substitutes another version. The low-level verifier independently checks filename, file/product version, company evidence, Authenticode status, Unity Technologies signer, and SHA-256 before Unity can start.
+
+If automatic discovery returns a missing-executable blocker, retry only with a user-confirmed exact path:
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entrypoint `
+  -ProjectRoot "E:\Unity\ExampleProject" `
+  -UnityExecutable "C:\Program Files\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe" `
+  -Pretty
+~~~
+
+## Artifact layout
+
+When `-ArtifactsRoot` is omitted, the orchestrator uses the existing Baseline-compatible system temporary root. It creates one session:
+
+~~~text
+<ArtifactsRoot>/
+└─ unity-baseline-orchestration-<guid>/
+   ├─ doctor/
+   │  ├─ unity-project-doctor.json
+   │  └─ doctor-stderr.log
+   └─ baseline/
+      └─ unity-baseline-verification-<guid>/...
+~~~
+
+The Doctor stdout is stored as UTF-8 without BOM without JSON reserialization. Scanner nonzero exit, empty stdout, or malformed JSON makes the Doctor input unusable and prevents Unity. An artifact root inside the source project or behind a reparse point is never written through and produces a structured low-level blocker.
 
 ## Safety contract
 
 - The original project is read-only and is never passed to Unity.
-- Unity Hub is never started. The verifier starts only the supplied `Unity.exe`.
+- Unity Hub is never started. The low-level verifier is the only component that starts the selected `Unity.exe`.
 - Logs, captured streams, result JSON, the Job Object session, and the copied project stay outside the source project.
 - The source root, Doctor JSON, Unity.exe, artifact root, and copy-included package paths must not traverse reparse points.
 - The exact source project must not already be open through a running `Unity.exe -projectPath` argument. Unrelated Unity projects are not blocked.
@@ -28,7 +95,7 @@ Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
 
 ## Doctor schema and migration
 
-Baseline 0.1.2 recognizes two Doctor contracts:
+The low-level verifier 0.1.2 recognizes two Doctor contracts:
 
 | Doctor contract | Static-audit validity | Baseline eligibility |
 | --- | --- | --- |
@@ -96,7 +163,7 @@ Safe references are normalized at the source and isolated manifests. The normali
 
 ## Unity.exe trust
 
-The production entrypoint requires all of the following:
+The production low-level entrypoint requires all of the following:
 
 - filename `Unity.exe` outside the source project;
 - no reparse traversal;
@@ -121,12 +188,12 @@ The result includes:
 
 `BASELINE_VERIFIED` additionally requires process exit code 0 and explicit Editor.log evidence for the exact Unity version, batch mode, isolated project path, initial AssetDatabase refresh, `CompileScripts`, domain reload, successful batch-mode shutdown, and logged return code 0. Missing markers are inconclusive, never inferred success.
 
-## Direct invocation
+## Advanced direct reproduction
 
-Generate Doctor JSON outside the project first, then run:
+The manual handoff remains supported for exact reproduction with a saved Doctor result. Generate Doctor JSON outside the project first, then run:
 
 ~~~powershell
-$verifier = "E:\Playground\Pipelines\unity_agent_pipeline\skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
+$verifier = "<skill-root>\scripts\verify-unity-baseline.ps1"
 $unity = "C:\Program Files\Unity\Hub\Editor\6000.0.69f1\Editor\Unity.exe"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
   -ProjectRoot "E:\Unity\ExampleProject" `
@@ -137,9 +204,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifier `
 
 `ExecutionPolicy Bypass` applies only to that child PowerShell process. The verifier prints exactly one JSON document to stdout; diagnostics use stderr. The same JSON is saved to `artifacts.resultPath`.
 
+The one-command orchestrator does not replace or weaken this mode; it prepares the same inputs automatically.
+
 ## Original integrity model
 
-Baseline 0.1.2 splits two facts that 0.1.1 combined:
+The low-level verifier 0.1.2 splits two facts that 0.1.1 combined:
 
 | Result object | Scope | Accepted states |
 | --- | --- | --- |
@@ -158,9 +227,9 @@ The content snapshot uses the same exclusion list and canonical file set as Doct
 
 The path classification identifies a reserved namespace; it does not claim which process wrote the entries. Any other Git delta produces `CHANGED` and final status `ORIGINAL_PROJECT_CHANGED`. No cleanup or rollback is attempted.
 
-## Result contract changes
+## Result contract compatibility
 
-Baseline result `schemaVersion` remains 1.1.0 and `verifierVersion` is 0.1.2. The four final status names are unchanged:
+Baseline component 0.2.0 forwards the existing result unchanged. Result `schemaVersion` remains 1.1.0 and `verifierVersion` remains 0.1.2 because the trust core did not change. The four final status names are unchanged:
 
 | finalStatus | Meaning |
 | --- | --- |
@@ -188,6 +257,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1
 ~~~
 
-CI uses plain Windows PowerShell and installs neither Unity nor external packages. The unsigned fake executable is blocked by the production entrypoint. It is invoked only through internal process-control and shared log-analysis functions to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
+CI uses plain Windows PowerShell and installs neither Unity nor external packages. The Baseline suite includes resolver and orchestration tests for exact CWD, raw Doctor handoff, warning preservation, resolver precedence, unsafe artifacts, malformed/nonzero scanners, JSON-only stdout, and Pretty formatting. The unsigned fake executable is blocked by both the one-command production path and the direct low-level entrypoint. It is invoked only through the existing internal process-control and shared log-analysis seam to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
 
-Regression tests also prove that checkpoint-only additions are accepted while HEAD, index, config, hook, and ordinary-ref changes remain blocking. For the signed-editor rerun criteria, see [Unity Baseline Verification 0.1.2 original-integrity acceptance](../validation/v0.1.2-original-integrity-acceptance.md). The gate passed on 2026-08-15; its anonymized evidence is recorded in the [0.1.2 real-Unity acceptance result](../validation/v0.1.2-real-unity-acceptance-result.md). The prior [0.1.1 acceptance procedure](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md) remains historical evidence.
+Regression tests also prove that checkpoint-only additions are accepted while HEAD, index, config, hook, and ordinary-ref changes remain blocking. The historical low-level gate passed on 2026-08-15; its anonymized evidence is recorded in the [0.1.2 real-Unity acceptance result](../validation/v0.1.2-real-unity-acceptance-result.md). That result does not approve the new orchestration path. Follow the separate [0.2.0 one-command acceptance procedure](../validation/v0.2.0-baseline-orchestration-acceptance.md) for a future explicit signed-Unity run. The prior [0.1.2 procedure](../validation/v0.1.2-original-integrity-acceptance.md) and [0.1.1 procedure](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md) remain historical evidence.

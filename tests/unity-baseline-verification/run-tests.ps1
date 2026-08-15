@@ -15,6 +15,9 @@ $script:ProcessLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "
 $script:EditorLogLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1"
 $script:GitIntegrityLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\git-metadata-integrity.ps1"
 $script:FingerprintLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
+$script:OrchestratorPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\invoke-unity-baseline-verification.ps1"
+$script:OrchestrationLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-baseline-orchestration.ps1"
+$script:OrchestrationTestsPath = Join-Path -Path $script:RepositoryRoot -ChildPath "tests\unity-baseline-verification\orchestration\run-tests.ps1"
 $script:InstallerPath = Join-Path -Path $script:RepositoryRoot -ChildPath "scripts\install-codex-skills.ps1"
 $script:ScratchRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("unity-baseline-verification-tests-" + [guid]::NewGuid().ToString("N"))
 $script:Assertions = 0
@@ -613,7 +616,7 @@ function Invoke-InternalFakeUnity {
     }
 }
 
-Write-Host "Unity Baseline Verification v0.1.2 integrity tests"
+Write-Host "Unity Baseline Verification v0.2.0 regression tests"
 Write-Host "Scratch root: $script:ScratchRoot"
 
 . $script:GitIntegrityLibraryPath
@@ -633,12 +636,15 @@ try {
         'docs\validation\v0.1.1-unity-baseline-real-unity-acceptance.md',
         'docs\validation\v0.1.2-original-integrity-acceptance.md',
         'docs\validation\v0.1.2-real-unity-acceptance-result.md',
+        'docs\validation\v0.2.0-baseline-orchestration-acceptance.md',
         'VERSION',
         'CHANGELOG.md',
         'skills\codex\unity-baseline-verification\VERSION',
         'skills\codex\unity-baseline-verification\SKILL.md',
         'skills\codex\unity-baseline-verification\agents\openai.yaml',
+        'skills\codex\unity-baseline-verification\scripts\invoke-unity-baseline-verification.ps1',
         'skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\unity-baseline-orchestration.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\json-schema-validator.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1',
@@ -646,13 +652,14 @@ try {
         'skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1',
         'scripts\install-codex-skills.ps1',
         'tests\unity-baseline-verification\run-tests.ps1',
+        'tests\unity-baseline-verification\orchestration\run-tests.ps1',
         '.github\workflows\baseline-static-tests.yml'
     )) {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot $requiredRelativePath) -PathType Leaf) -Message "Required file $requiredRelativePath"
     }
 
     Assert-Equal -Expected '0.3.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'VERSION')).Trim()) -Message 'Repository VERSION'
-    Assert-Equal -Expected '0.1.2' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
+    Assert-Equal -Expected '0.2.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
     Assert-Equal -Expected '0.2.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-project-doctor\VERSION')).Trim()) -Message 'Doctor Skill VERSION'
     $acceptanceResultContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\validation\v0.1.2-real-unity-acceptance-result.md')
     Assert-True -Condition ($acceptanceResultContent.Contains('APPROVED')) -Message 'Real-Unity acceptance approval marker'
@@ -668,11 +675,21 @@ try {
     Assert-True -Condition ($releaseNotesContent.Contains('`$unity-baseline-verification` | `0.1.2`')) -Message 'Release notes Baseline component version'
     $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
     Assert-True -Condition ($skillContent -match '^---\r?\nname: unity-baseline-verification\r?\ndescription:') -Message 'Skill frontmatter'
+    $frontmatterMatch = [regex]::Match($skillContent, '^---\r?\n(?<body>.*?)\r?\n---', [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    Assert-True -Condition $frontmatterMatch.Success -Message 'Skill frontmatter delimiters'
+    $frontmatterKeys = @([regex]::Matches($frontmatterMatch.Groups['body'].Value, '(?m)^(?<key>[a-z][a-z0-9-]*):') | ForEach-Object { $_.Groups['key'].Value })
+    Assert-Equal -Expected 'name|description' -Actual ([string]::Join('|', [string[]]$frontmatterKeys)) -Message 'Skill frontmatter contains only name and description'
     Assert-True -Condition ($skillContent -match '\$unity-baseline-verification') -Message 'Skill explicit invocation text'
     $agentContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\agents\openai.yaml')
     Assert-True -Condition ($agentContent -match '(?m)^\s*allow_implicit_invocation:\s*false\s*$') -Message 'Implicit invocation policy'
+    foreach ($interfaceField in @('display_name', 'short_description', 'default_prompt')) {
+        Assert-True -Condition ($agentContent -match ('(?m)^\s*{0}:\s*"[^"]+"\s*$' -f [regex]::Escape($interfaceField))) -Message "Quoted openai.yaml interface field: $interfaceField"
+    }
     $verifierContent = Get-Content -Raw -LiteralPath $script:VerifierPath
     Assert-True -Condition ($verifierContent -notmatch '(?i)SkipSignatureCheck|TestMode') -Message 'Production verifier exposes no trust bypass flag'
+    Assert-True -Condition ($verifierContent.Contains('$script:VerifierVersion = "0.1.2"')) -Message 'Low-level verifier remains at approved metadata version 0.1.2'
+    $orchestratorContent = Get-Content -Raw -LiteralPath $script:OrchestratorPath
+    Assert-True -Condition ($orchestratorContent.Contains('$script:BaselineComponentVersion = "0.2.0"')) -Message 'Orchestration component metadata version'
     foreach ($finalStatus in @('BASELINE_VERIFIED', 'BASELINE_FAILED', 'VERIFICATION_BLOCKED', 'ORIGINAL_PROJECT_CHANGED')) {
         Assert-True -Condition ($verifierContent.Contains($finalStatus)) -Message "Final status remains defined: $finalStatus"
     }
@@ -1030,6 +1047,12 @@ try {
     }
     Assert-True -Condition $conflictThrown -Message 'Installer rejects conflict'
     Assert-Equal -Expected 'preserve' -Actual ([System.IO.File]::ReadAllText((Join-Path $conflictPath 'marker.txt'), $script:Utf8NoBom)) -Message 'Installer preserves conflict'
+
+    $orchestrationOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $script:OrchestrationTestsPath 2>&1)
+    $orchestrationExitCode = $LASTEXITCODE
+    $orchestrationOutput | ForEach-Object { Write-Host ([string]$_) }
+    Assert-Equal -Expected 0 -Actual $orchestrationExitCode -Message 'Orchestration child test exit code'
+    Assert-True -Condition ([string]::Join([Environment]::NewLine, [string[]]$orchestrationOutput).Contains('All orchestration tests passed. Assertions:')) -Message 'Orchestration child test completion marker'
 
     $fixturesAfter = Get-TestTreeSnapshot -Root $fixtureRoot
     Assert-Equal -Expected $fixturesBefore -Actual $fixturesAfter -Message 'Fixture file list and hashes remain unchanged'

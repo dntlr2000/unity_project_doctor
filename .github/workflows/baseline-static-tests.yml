@@ -19,6 +19,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Run Doctor fixture and schema tests
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
+
       - name: Run fake-Unity and static tests
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1

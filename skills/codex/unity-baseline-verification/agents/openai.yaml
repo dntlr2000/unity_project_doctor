@@ -1,7 +1,7 @@
 interface:
   display_name: "Unity Baseline Verification"
   short_description: "Verify an isolated Unity compilation baseline"
-  default_prompt: "Use $unity-baseline-verification with an existing unity-project-doctor 0.2.1 schema 1.1.0 fingerprinted JSON file to verify the current Unity project's isolated compilation baseline."
+  default_prompt: "Use $unity-baseline-verification to verify the current Unity project's isolated script-compilation baseline with automatic Doctor and Unity.exe discovery."
 
 policy:
   allow_implicit_invocation: false

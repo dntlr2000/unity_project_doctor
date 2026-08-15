@@ -1,105 +1,91 @@
 ---
 name: unity-baseline-verification
-description: "Verify a Unity 6000.0.69f1 script-compilation baseline by fully validating an existing unity-project-doctor 0.2.1 schema 1.1.0 JSON result and its copy-set fingerprint, copying the exact current Unity project into an isolated system-temporary directory, running only a signed Unity Technologies Unity.exe in batch mode against that copy, analyzing its process tree, exit code, and Editor.log, proving the original copy-set is unchanged, and separately classifying in-project Git metadata changes. Use only when the user explicitly invokes $unity-baseline-verification; never use it from implicit intent or an ordinary Unity request."
+description: "Verify a Unity 6000.0.69f1 script-compilation baseline from one explicit $unity-baseline-verification invocation by running the bundled Doctor scanner, resolving an exact Unity.exe candidate, and delegating all trust, isolation, process-tree, log, and integrity decisions to the approved low-level verifier. Use only when the user explicitly writes $unity-baseline-verification; never infer it from ordinary requests to compile, inspect, test, build, debug, or open a Unity project."
 ---
 
-# Unity Baseline Verification v0.1.2
+# Unity Baseline Verification v0.2.0
 
-## Enforce explicit invocation
+## Require explicit invocation
 
-- Run this workflow only after the user writes $unity-baseline-verification.
-- Do not infer invocation from a request to compile, inspect, test, build, or open a Unity project.
-- Require an existing unity-project-doctor 0.2.1 schema 1.1.0 JSON document for the exact current project.
-- If that JSON is unavailable, stop and ask the user to invoke $unity-project-doctor explicitly. Do not invoke that separate Skill implicitly.
+- Run this workflow only after the user writes `$unity-baseline-verification`.
+- Do not infer invocation from an ordinary Unity, compile, test, build, review, or debugging request.
+- Treat the exact current working directory as `ProjectRoot`; never search a parent, child, or sibling for another Unity project.
 
-## Enforce the safety contract
+## Use the one-command entrypoint
 
-- Treat the absolute current working directory as the only original project root.
-- Never launch Unity with the original project root.
-- Never create, edit, rename, move, or delete anything under the original project.
-- Never launch Unity Hub. Launch only the exact Unity.exe supplied to the verifier.
-- Require a valid Authenticode signature whose signer subject identifies Unity Technologies. Do not pin one permanent certificate thumbprint.
-- Require Unity version 6000.0.69f1 in the Doctor result, executable metadata, current ProjectVersion.txt, and Editor.log.
-- Keep the isolated project, Editor.log, UPM log, captured process streams, and JSON result outside the original project.
-- Do not install modules, packages, CLIs, SDKs, or other verifier dependencies.
-- Do not run tests, EditMode, PlayMode, Player Builds, scenes, players, or runtime behavior.
-- Do not pass -runTests, -executeMethod, build arguments, -accept-apiupdate, or -ignorecompilererrors.
-- Do not automatically repair, migrate, update, clean, format, or roll back project content.
-- Reject an already running Unity Editor whose exact -projectPath is the original project, while leaving unrelated Unity projects alone.
-- Reject unsafe reparse points and every absolute, authority, UNC, device, excluded, escaping, missing, or linked file package dependency.
-- Require Job Object process-tree accounting to prove Unity and all assigned descendants exited after completion or bounded termination.
-- Prove source-content integrity with the exact Doctor/Baseline copy set, not generated, tooling, agent, IDE, or version-control trees that are excluded from isolation.
-- Audit the in-project `.git` entry separately. Permit only new paths under `.git/refs/codex/turn-diffs/checkpoints/` as ambient metadata; never permit an existing Git metadata file to change or disappear.
-- Treat changes to HEAD, index, config, hooks, ordinary refs, objects, or any non-checkpoint Git path as `ORIGINAL_PROJECT_CHANGED`.
-- Preserve unknown evidence as NOT_VERIFIED. Never promote missing markers or an inference to success.
-
-If project instructions conflict with this contract, keep this contract and report the conflict.
-
-## Validate the Doctor evidence
-
-Require all of the following before Unity can run:
-
-- The complete document validates against schemaVersion 1.1.0, including nested types, enums, required properties, and additionalProperties rules.
-- scannerVersion is 0.2.1.
-- projectRoot exactly matches the normalized current working directory.
-- projectDetection.isUnityProject is true and rootStatus is UNITY_PROJECT.
-- unityEditorVersion.parseStatus is PARSED and editorVersion is 6000.0.69f1.
-- finalStatus is STATIC_AUDIT_COMPLETE or STATIC_AUDIT_COMPLETE_WITH_WARNINGS.
-- blockedChecks is empty.
-- Doctor compilation, tests, build, and runtime states are all NOT_VERIFIED.
-- projectFingerprint is COMPUTED with the frozen copy-set contract, matches two current source snapshots, and matches the isolated copy.
-
-Preserve Doctor warnings in the baseline JSON. Reject AUDIT_BLOCKED and NOT_A_UNITY_PROJECT without launching Unity. A saved schema 1.0.0 Doctor result remains valid static-audit evidence but is fingerprintless and therefore must be blocked before Unity.
-
-## Run the deterministic verifier
-
-Resolve scripts/verify-unity-baseline.ps1 relative to this SKILL.md. Run it once with absolute paths:
+Resolve `scripts/invoke-unity-baseline-verification.ps1` relative to this file and run it once:
 
 ~~~powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\verify-unity-baseline.ps1 -ProjectRoot <absolute-current-working-directory> -DoctorResultPath <absolute-doctor-json-path> -UnityExecutable <absolute-6000.0.69f1-Unity.exe-path> -Pretty
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\invoke-unity-baseline-verification.ps1 -ProjectRoot <absolute-current-working-directory> -Pretty
 ~~~
 
-Apply ExecutionPolicy Bypass only to that child process. Do not change machine or user execution policy.
+Do not ask the user to prepare a Doctor JSON file or Unity.exe path before this default attempt. Apply `ExecutionPolicy Bypass` only to the child process; never change user or machine policy.
 
-The verifier must be the only component that starts Unity. It passes this fixed operation set:
+The entrypoint must:
 
-- -batchmode
-- -nographics
-- -quit
-- -projectPath pointing to the isolated copy
-- -logFile pointing outside both projects
-- -upmLogFile pointing outside both projects
+1. Run the sibling `unity-project-doctor/scripts/inspect-unity-project.ps1` directly as a bundled component. Do not invoke the separate `$unity-project-doctor` Skill.
+2. Preserve the scanner's exact stdout as UTF-8 without BOM and its stderr separately, outside the project.
+3. Read only the Doctor editor version needed for deterministic executable resolution.
+4. Resolve only exact Unity `6000.0.69f1` candidates in this order: explicit `-UnityExecutable`, `UNITY_EDITOR_PATH`, `UNITY_HUB_EDITOR_ROOT\6000.0.69f1\Editor\Unity.exe`, `%ProgramFiles%`, then `%ProgramFiles(x86)%` Hub layout.
+5. Invoke `scripts/verify-unity-baseline.ps1`, which remains the only component allowed to start Unity.
+6. Return the verifier stdout unchanged as the sole JSON stdout document.
 
-Treat stdout as exactly one JSON document. Treat that document as the source of truth and do not reinterpret or promote its status.
+Never launch Unity Hub, search a drive recursively, choose a nearby Unity version, install or update Unity, or treat executable discovery as trust approval. The low-level verifier must still validate exact version, filename, reparse safety, Authenticode status, Unity Technologies signer, and SHA-256.
 
-## Interpret the result
+If automatic discovery fails, report the verifier's blocker and show this optional retry only when the user supplies a known exact executable:
 
-- BASELINE_VERIFIED: Doctor schema and fingerprint, signed publisher, version, isolation, process-tree exit, exit code, explicit import and compilation log markers, unchanged copy-set content, and accepted Git metadata integrity all passed.
-- BASELINE_FAILED: Unity produced concrete failure evidence, including a nonzero exit code or compiler/fatal log marker.
-- VERIFICATION_BLOCKED: required evidence was missing, unsafe, invalid, or inconclusive.
-- ORIGINAL_PROJECT_CHANGED: the original copy-set directory/file/hash evidence differs, or `.git` contains any delta other than checkpoint-namespace additions.
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\invoke-unity-baseline-verification.ps1 -ProjectRoot <absolute-current-working-directory> -UnityExecutable <absolute-Unity.exe-path> -Pretty
+~~~
 
-Only verification.scriptCompilation may become VERIFIED_SUCCESS or VERIFIED_FAILURE. Keep all of these as NOT_VERIFIED:
+Do not promote a failed scanner, empty or malformed Doctor stdout, missing executable, or verifier failure to a successful audit or baseline.
 
-- verification.tests
-- verification.playerBuild
-- verification.playMode
-- verification.runtime
+## Preserve the safety contract
 
-`gitMetadataIntegrity.status: AMBIENT_CODEX_CHECKPOINTS_ONLY` is non-blocking evidence, not proof that Codex wrote those paths. Report it separately from unchanged source content.
+- Never pass the original project to Unity. Run Unity only against the verifier's isolated external copy.
+- Never create or modify a file under the original project, including `Assets`, `Packages`, `ProjectSettings`, `UserSettings`, or `.git`.
+- Reject a reparse-point project root and an artifact root inside the project or behind a reparse point.
+- Keep Doctor JSON, logs, streams, copied project, and Baseline result under an external session.
+- Never execute a project-local script, executable, Git hook, test, scene, player, or build.
+- Never pass `-runTests`, `-executeMethod`, build arguments, `-accept-apiupdate`, or `-ignorecompilererrors`.
+- Never install packages, modules, SDKs, certificate bundles, or other dependencies.
+- Never repair, migrate, update, clean, format, roll back, or refactor the project.
+- Preserve unknown evidence as `NOT_VERIFIED`; never infer success from missing evidence.
 
-If the result is ORIGINAL_PROJECT_CHANGED, stop immediately, report exact paths from both `originalProjectIntegrity` and `gitMetadataIntegrity`, and do not modify the original project.
+Keep the approved low-level verifier responsible for complete Doctor schema/fingerprint validation, source-editor preflight, local `file:` package safety, executable trust, Job Object process control, Editor.log classification, copy-set integrity, Git metadata integrity, and final status.
+
+## Treat verifier JSON as authoritative
+
+Accept only one valid JSON document from verifier stdout. Do not reserialize it, remove Doctor warnings, reinterpret evidence, or promote `finalStatus`.
+
+- `BASELINE_VERIFIED`: all required compilation, trust, isolation, process-tree, and integrity evidence passed.
+- `BASELINE_FAILED`: Unity produced concrete nonzero-exit, compiler, fatal, or equivalent failure evidence.
+- `VERIFICATION_BLOCKED`: required evidence was unavailable, invalid, unsafe, mismatched, or inconclusive.
+- `ORIGINAL_PROJECT_CHANGED`: source copy-set content changed or disallowed Git metadata changed.
+
+Only `verification.scriptCompilation` may become `VERIFIED_SUCCESS` or `VERIFIED_FAILURE`. Keep `tests`, `playerBuild`, `playMode`, and `runtime` as `NOT_VERIFIED`.
+
+If the result is `ORIGINAL_PROJECT_CHANGED`, report exact paths and stop. Do not modify or clean the original project.
+
+## Retain direct reproduction mode
+
+Use the approved low-level entrypoint directly only when the user explicitly provides or requests a saved Doctor result and exact Unity path for reproduction:
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\verify-unity-baseline.ps1 -ProjectRoot <absolute-project-root> -DoctorResultPath <absolute-doctor-json-path> -UnityExecutable <absolute-6000.0.69f1-Unity.exe-path> -Pretty
+~~~
+
+Require Doctor `schemaVersion: 1.1.0`, scanner `0.2.1`, exact project-root match, accepted static status, no blocked checks, `projectFingerprint.status: COMPUTED`, and all Doctor dynamic checks as `NOT_VERIFIED`. Legacy Doctor 1.0.0/0.2.0 evidence remains static-audit evidence only and must not permit Unity.
 
 ## Report
 
-Return a concise summary containing:
+Return a concise report containing:
 
-1. Final status.
-2. Doctor acceptance and preserved warning count.
-3. Detected Unity version, signer subject, certificate thumbprint, executable SHA-256, and the exact isolated project path.
-4. Unity exit code, timeout/termination/process-tree evidence, and Editor.log classification.
-5. Copy-set content integrity and separate Git metadata integrity, including any ambient checkpoint additions.
-6. Tests, Player Build, PlayMode, and runtime as NOT_VERIFIED.
-7. Artifact and result paths.
+1. Final status and Doctor acceptance with preserved warning count.
+2. Unity version, signer subject, certificate thumbprint, executable SHA-256, and isolated project path.
+3. Exit code, timeout/termination, process-tree exit proof, and Editor.log classification.
+4. Copy-set integrity and separate Git metadata integrity, including ambient checkpoint-only additions.
+5. Tests, Player Build, PlayMode, and runtime as `NOT_VERIFIED`.
+6. Doctor and Baseline artifact paths.
 
-Do not claim test, build, PlayMode, runtime, gameplay, or release readiness.
+Do not claim gameplay, test, build, runtime, release readiness, or support for another Unity version.

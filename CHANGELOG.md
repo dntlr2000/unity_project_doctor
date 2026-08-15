@@ -4,7 +4,40 @@
 
 ## Unreleased
 
-현재 미공개 변경 사항 없음.
+### Unity Baseline Verification 0.2.0 one-command orchestration
+
+#### Added
+
+- `invoke-unity-baseline-verification.ps1` as the default one-command entrypoint
+- Automatic direct invocation of the bundled Doctor 0.2.1 scanner with raw UTF-8-no-BOM JSON and separate stderr artifacts outside the source project
+- Deterministic exact-version Unity.exe resolution through explicit override, `UNITY_EDITOR_PATH`, `UNITY_HUB_EDITOR_ROOT`, Program Files, and Program Files (x86)
+- Orchestration and resolver regression coverage for exact CWD, no parent/child search, warning preservation, scanner failures, unsafe artifact roots, JSON-only stdout, and Pretty formatting
+- A future signed-Unity 0.2.0 one-command acceptance procedure that does not claim execution or approval
+
+#### Changed
+
+- `unity-baseline-verification` component version is now `0.2.0`
+- The default Skill workflow no longer requires users to create a Doctor JSON file or identify a normal Unity Hub executable path before the first attempt
+- Skill metadata and documentation now distinguish component 0.2.0 orchestration from the unchanged low-level verifier 0.1.2 trust core
+
+#### Compatibility
+
+- Repository `VERSION` remains `0.3.0`; the published `v0.3.0` tag and Release remain historical and unchanged
+- Doctor remains `0.2.1` with schema `1.1.0`
+- Low-level verifier metadata remains `0.1.2`, Baseline result schema remains `1.1.0`, and all four final status meanings are unchanged
+- The existing manual `DoctorResultPath` plus `UnityExecutable` reproduction mode remains supported
+
+#### Security
+
+- The orchestrator never starts Unity or Unity Hub; only the approved low-level verifier may start Unity after full trust validation
+- Scanner nonzero exit, empty stdout, malformed JSON, unsupported editor version, missing executable, in-project artifacts, and reparse artifacts all prevent Unity
+- No recursive drive search, registry mutation, Unity installation/update, signature bypass, package installation, source modification, automatic repair, or implicit Skill invocation was added
+
+#### Validation
+
+- Doctor fixture/schema/fingerprint tests, low-level Baseline regression tests, and orchestration/resolver tests run without a Unity installation or external package
+- The unsigned Unity-shaped fixture remains blocked by the production verifier and is never admitted through a public or hidden bypass
+- No real Unity, Unity Hub, or signed-editor acceptance run is claimed for component 0.2.0
 
 ## Unity Agent Pipeline 0.3.0 - 2026-08-15
 
