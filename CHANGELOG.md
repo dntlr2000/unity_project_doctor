@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+현재 미공개 변경 사항 없음.
+
+## Unity Agent Pipeline 0.3.0 - 2026-08-15
+
+저장소 Release 버전은 `0.3.0`이며 component 버전은 다음과 같이 독립적으로 유지한다.
+
+- `unity-project-doctor`: `0.2.1`
+- `unity-baseline-verification`: `0.1.2`
+
 ### Unity Baseline Verification 0.1.2 original-integrity classification
 
 #### Added
@@ -11,7 +20,8 @@
 - Separate deterministic `.git` metadata snapshots with exact added, removed, changed, and disallowed-path evidence
 - A narrowly scoped `AMBIENT_CODEX_CHECKPOINTS_ONLY` classification for additions below `.git/refs/codex/turn-diffs/checkpoints/`
 - Regression coverage proving checkpoint additions remain non-blocking while HEAD, index, config, hooks, ordinary refs, and source-content changes remain detectable
-- A v0.1.2 signed-Unity rerun gate that does not claim acceptance before an explicit real-Unity run
+- A v0.1.2 signed-Unity rerun gate that requires an explicit invocation before any real-Unity run
+- An anonymized real-Unity acceptance result recording `BASELINE_VERIFIED` for Baseline 0.1.2 with Doctor 0.2.1/schema 1.1.0
 
 #### Changed
 
@@ -27,6 +37,12 @@
 
 - Only new checkpoint-namespace paths are ambient; any existing Git metadata change or removal and every addition outside that namespace still produces `ORIGINAL_PROJECT_CHANGED`
 - No automatic cleanup, rollback, Git mutation, Unity scope expansion, or implicit Skill invocation was added
+
+#### Validation
+
+- A signed Unity `6000.0.69f1` run completed isolated script compilation with zero compiler errors
+- The Doctor/Baseline copy set and Git metadata were both `UNCHANGED`; tests, Player Build, PlayMode, and runtime remained `NOT_VERIFIED`
+- The raw result JSON remains outside the repository because it contains machine-local absolute paths; the public acceptance record contains its SHA-256 and anonymized evidence
 
 ### Unity Baseline Verification 0.1.1 hardening
 

@@ -308,7 +308,7 @@ Assert-Equal -Expected "https://json-schema.org/draft/2020-12/schema" -Actual (G
 Assert-Equal -Expected "1.0.0" -Actual $legacyAuditSchema.properties.schemaVersion.const -Message "Frozen legacy JSON Schema contract version"
 Assert-Equal -Expected "1.1.0" -Actual $auditSchema.properties.schemaVersion.const -Message "Fingerprint JSON Schema contract version"
 $version = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()
-Assert-Equal -Expected "0.2.0" -Actual $version -Message "Repository VERSION"
+Assert-Equal -Expected "0.3.0" -Actual $version -Message "Repository VERSION"
 $doctorVersion = (Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\VERSION")).Trim()
 Assert-Equal -Expected "0.2.1" -Actual $doctorVersion -Message "Doctor Skill VERSION"
 $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\SKILL.md")

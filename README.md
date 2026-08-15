@@ -66,8 +66,10 @@ unity_agent_pipeline/
 ├── docs/
 │   ├── skills/unity-baseline-verification.md
 │   ├── skills/unity-project-doctor.md
+│   ├── releases/v0.3.0.md
 │   ├── validation/v0.1.1-unity-baseline-real-unity-acceptance.md
 │   ├── validation/v0.1.2-original-integrity-acceptance.md
+│   ├── validation/v0.1.2-real-unity-acceptance-result.md
 │   └── validation/v0.2.0-real-project-acceptance.md
 ├── schemas/
 │   ├── unity-project-audit.schema.json
@@ -95,7 +97,7 @@ unity_agent_pipeline/
 
 Skill 원본은 이 Git 저장소에 남는다. 설치기는 `skills/codex` 아래의 모든 Skill을 사용자 홈 `.agents/skills`에 이름별 symbolic link로 연결한다.
 
-루트 `VERSION`은 마지막으로 게시된 저장소 Release 기준선을 나타낸다. 각 Skill의 실제 component 버전은 해당 Skill 디렉터리의 `VERSION`을 사용한다.
+루트 `VERSION`은 다음 저장소 Release로 봉인할 버전을 나타낸다. 현재 준비된 저장소 버전은 `0.3.0`이며, 실제 tag와 GitHub Release 게시 전까지는 release candidate다. 각 Skill의 실제 component 버전은 해당 Skill 디렉터리의 `VERSION`을 사용한다.
 
 ## 안전 계약
 
@@ -323,7 +325,7 @@ GitHub Actions의 `static-tests.yml`은 Doctor fixture/schema/fingerprint를, `b
 
 실제 프로젝트 승인 결과는 [v0.2.0 실제 프로젝트 승인 기록](docs/validation/v0.2.0-real-project-acceptance.md)에 정리되어 있다.
 
-Baseline 0.1.2의 checkpoint 오탐 회귀 조건과 실제 Unity 재승인 기준은 [v0.1.2 원본 무결성 승인 절차](docs/validation/v0.1.2-original-integrity-acceptance.md)에 정의되어 있다. 이 구현 단계에서는 실제 Unity를 실행하지 않으며, 기존 [v0.1.1 절차](docs/validation/v0.1.1-unity-baseline-real-unity-acceptance.md)는 과거 기준선으로 보존한다.
+Baseline 0.1.2의 checkpoint 오탐 회귀 조건과 실제 Unity 재승인 기준은 [v0.1.2 원본 무결성 승인 절차](docs/validation/v0.1.2-original-integrity-acceptance.md)에 정의되어 있다. 해당 절차는 명시적으로 호출된 signed-Unity 실행에서 `BASELINE_VERIFIED`로 승인되었으며, 공개 가능한 근거는 [v0.1.2 실제 Unity 승인 결과](docs/validation/v0.1.2-real-unity-acceptance-result.md)에 기록했다. 기존 [v0.1.1 절차](docs/validation/v0.1.1-unity-baseline-real-unity-acceptance.md)는 과거 기준선으로 보존한다.
 
 ### 비 Unity 폴더
 
@@ -385,4 +387,4 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 
 자세한 전제조건, 실행 명령, 결과 상태 및 안전 계약은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)를 따른다.
 
-실제 서명된 Unity를 사용하는 검증은 자동 테스트 범위가 아니다. 사용자가 `$unity-baseline-verification`을 명시적으로 호출한 별도 작업에서 [v0.1.2 승인 절차](docs/validation/v0.1.2-original-integrity-acceptance.md)를 따른다.
+실제 서명된 Unity를 사용하는 검증은 자동 테스트 범위가 아니다. 사용자가 `$unity-baseline-verification`을 명시적으로 호출한 별도 작업에서 [v0.1.2 승인 절차](docs/validation/v0.1.2-original-integrity-acceptance.md)를 따른다. 저장소 `0.3.0`의 승인 결과와 게시 전 점검 사항은 [v0.1.2 실제 Unity 승인 결과](docs/validation/v0.1.2-real-unity-acceptance-result.md)와 [v0.3.0 Release 노트](docs/releases/v0.3.0.md)에 정리되어 있다.

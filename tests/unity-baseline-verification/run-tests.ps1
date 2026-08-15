@@ -629,8 +629,11 @@ try {
         'schemas\unity-project-audit-1.1.0.schema.json',
         'docs\skills\unity-baseline-verification.md',
         'docs\skills\unity-project-doctor.md',
+        'docs\releases\v0.3.0.md',
         'docs\validation\v0.1.1-unity-baseline-real-unity-acceptance.md',
         'docs\validation\v0.1.2-original-integrity-acceptance.md',
+        'docs\validation\v0.1.2-real-unity-acceptance-result.md',
+        'VERSION',
         'CHANGELOG.md',
         'skills\codex\unity-baseline-verification\VERSION',
         'skills\codex\unity-baseline-verification\SKILL.md',
@@ -648,8 +651,21 @@ try {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot $requiredRelativePath) -PathType Leaf) -Message "Required file $requiredRelativePath"
     }
 
+    Assert-Equal -Expected '0.3.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'VERSION')).Trim()) -Message 'Repository VERSION'
     Assert-Equal -Expected '0.1.2' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
     Assert-Equal -Expected '0.2.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-project-doctor\VERSION')).Trim()) -Message 'Doctor Skill VERSION'
+    $acceptanceResultContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\validation\v0.1.2-real-unity-acceptance-result.md')
+    Assert-True -Condition ($acceptanceResultContent.Contains('APPROVED')) -Message 'Real-Unity acceptance approval marker'
+    Assert-True -Condition ($acceptanceResultContent.Contains('BASELINE_VERIFIED')) -Message 'Real-Unity acceptance final status'
+    Assert-True -Condition ($acceptanceResultContent.Contains('fd13e495d7e993f17812ce87fc68f9589e7f6d3498ca8f01399fc75309ca1203')) -Message 'Real-Unity acceptance raw evidence hash'
+    Assert-True -Condition (-not $acceptanceResultContent.Contains('C:\Users\')) -Message 'Public acceptance result excludes user-profile paths'
+    Assert-True -Condition (-not $acceptanceResultContent.Contains('E:\Unity\')) -Message 'Public acceptance result excludes source-project paths'
+    Assert-True -Condition (-not $acceptanceResultContent.Contains('Woosik')) -Message 'Public acceptance result excludes local user name'
+    $releaseNotesContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\releases\v0.3.0.md')
+    Assert-True -Condition ($releaseNotesContent.Contains('PREPARED')) -Message 'Release notes preparation state'
+    Assert-True -Condition ($releaseNotesContent.Contains('NOT TAGGED OR PUBLISHED')) -Message 'Release notes publication state'
+    Assert-True -Condition ($releaseNotesContent.Contains('`$unity-project-doctor` | `0.2.1`')) -Message 'Release notes Doctor component version'
+    Assert-True -Condition ($releaseNotesContent.Contains('`$unity-baseline-verification` | `0.1.2`')) -Message 'Release notes Baseline component version'
     $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
     Assert-True -Condition ($skillContent -match '^---\r?\nname: unity-baseline-verification\r?\ndescription:') -Message 'Skill frontmatter'
     Assert-True -Condition ($skillContent -match '\$unity-baseline-verification') -Message 'Skill explicit invocation text'
