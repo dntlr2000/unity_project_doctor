@@ -97,7 +97,7 @@ unity_agent_pipeline/
 
 Skill 원본은 이 Git 저장소에 남는다. 설치기는 `skills/codex` 아래의 모든 Skill을 사용자 홈 `.agents/skills`에 이름별 symbolic link로 연결한다.
 
-루트 `VERSION`은 다음 저장소 Release로 봉인할 버전을 나타낸다. 현재 준비된 저장소 버전은 `0.3.0`이며, 실제 tag와 GitHub Release 게시 전까지는 release candidate다. 각 Skill의 실제 component 버전은 해당 Skill 디렉터리의 `VERSION`을 사용한다.
+루트 `VERSION`은 저장소 Release 버전을 선언한다. 게시된 봉인의 권위 있는 근거는 같은 버전을 가리키는 annotated Git tag와 GitHub Release이며, 각 Skill의 실제 component 버전은 해당 Skill 디렉터리의 `VERSION`을 사용한다.
 
 ## 안전 계약
 

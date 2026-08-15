@@ -662,8 +662,8 @@ try {
     Assert-True -Condition (-not $acceptanceResultContent.Contains('E:\Unity\')) -Message 'Public acceptance result excludes source-project paths'
     Assert-True -Condition (-not $acceptanceResultContent.Contains('Woosik')) -Message 'Public acceptance result excludes local user name'
     $releaseNotesContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\releases\v0.3.0.md')
-    Assert-True -Condition ($releaseNotesContent.Contains('PREPARED')) -Message 'Release notes preparation state'
-    Assert-True -Condition ($releaseNotesContent.Contains('NOT TAGGED OR PUBLISHED')) -Message 'Release notes publication state'
+    Assert-True -Condition ($releaseNotesContent.Contains('Release contract status: **FINAL**')) -Message 'Release notes final contract state'
+    Assert-True -Condition ($releaseNotesContent.Contains('This file records invariant release requirements')) -Message 'Release notes durable publication semantics'
     Assert-True -Condition ($releaseNotesContent.Contains('`$unity-project-doctor` | `0.2.1`')) -Message 'Release notes Doctor component version'
     Assert-True -Condition ($releaseNotesContent.Contains('`$unity-baseline-verification` | `0.1.2`')) -Message 'Release notes Baseline component version'
     $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
