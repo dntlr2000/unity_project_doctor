@@ -9,6 +9,7 @@ $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:RepositoryRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)))).TrimEnd("\", "/")
 $script:OrchestratorPath = Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\scripts\invoke-unity-baseline-verification.ps1"
 $script:OrchestrationLibraryPath = Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\scripts\lib\unity-baseline-orchestration.ps1"
+$script:IsolationPathBudgetLibraryPath = Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\scripts\lib\unity-isolation-path-budget.ps1"
 $script:VerifierPath = Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
 $script:ScannerPath = Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\scripts\inspect-unity-project.ps1"
 $script:ScratchRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ubo-tests-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -337,7 +338,7 @@ function Remove-OrchestrationTestArtifacts {
         }
         $leaf = [System.IO.Path]::GetFileName($candidate)
         $allowed = $candidate -eq $normalizedScratch -or
-            $leaf.StartsWith("unity-baseline-orchestration-", [System.StringComparison]::Ordinal) -or
+            $leaf -match '^o-[0-9a-f]{32}$' -or
             $leaf.StartsWith("unity-baseline-verification-", [System.StringComparison]::Ordinal)
         if (-not $allowed -or -not (Test-OrchestrationPathWithinRoot -Path $candidate -Root $temporaryRoot)) {
             throw "Refusing to remove unverified session root: $candidate"
@@ -355,7 +356,7 @@ $fixtureRoot = Join-Path $script:RepositoryRoot "tests\fixtures"
 $fixturesBefore = Get-TestTreeSnapshot -Root $fixtureRoot
 
 try {
-    foreach ($requiredPath in @($script:OrchestratorPath, $script:OrchestrationLibraryPath, $script:VerifierPath, $script:ScannerPath)) {
+    foreach ($requiredPath in @($script:OrchestratorPath, $script:OrchestrationLibraryPath, $script:IsolationPathBudgetLibraryPath, $script:VerifierPath, $script:ScannerPath)) {
         Assert-True -Condition (Test-Path -LiteralPath $requiredPath -PathType Leaf) -Message "Required orchestration file: $requiredPath"
     }
     Assert-Equal -Expected "0.3.0" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()) -Message "Repository VERSION remains sealed"
@@ -369,7 +370,7 @@ try {
     $verifierContent = Get-Content -Raw -LiteralPath $script:VerifierPath
     Assert-True -Condition ($orchestratorContent.Contains('$script:OrchestratorVersion = "0.1.0"')) -Message "Orchestrator metadata version"
     Assert-True -Condition ($orchestratorContent.Contains('$script:BaselineComponentVersion = "0.2.0"')) -Message "Component metadata version"
-    Assert-True -Condition ($verifierContent.Contains('$script:VerifierVersion = "0.1.2"')) -Message "Low-level verifier metadata remains 0.1.2"
+    Assert-True -Condition ($verifierContent.Contains('$script:VerifierVersion = "0.1.3"')) -Message "Low-level verifier metadata version 0.1.3"
     Assert-True -Condition ($verifierContent.Contains('$script:SchemaVersion = "1.1.0"')) -Message "Baseline result schema remains 1.1.0"
     foreach ($status in @("BASELINE_VERIFIED", "BASELINE_FAILED", "VERIFICATION_BLOCKED", "ORIGINAL_PROJECT_CHANGED")) {
         Assert-True -Condition ($verifierContent.Contains($status)) -Message "Low-level final status remains defined: $status"
@@ -453,7 +454,7 @@ try {
     Assert-Equal -Expected (Get-OrchestrationNormalizedPath $projectRoot) -Actual $defaultResult.result.projectRoot -Message "Omitted ProjectRoot uses exact current working directory"
     Assert-Equal -Expected "VERIFICATION_BLOCKED" -Actual $defaultResult.result.finalStatus -Message "Unsigned production fake remains blocked"
     Assert-Equal -Expected "1.1.0" -Actual $defaultResult.result.schemaVersion -Message "Forwarded Baseline schema version"
-    Assert-Equal -Expected "0.1.2" -Actual $defaultResult.result.verifierVersion -Message "Forwarded low-level verifier version"
+    Assert-Equal -Expected "0.1.3" -Actual $defaultResult.result.verifierVersion -Message "Forwarded low-level verifier version"
     Assert-Equal -Expected $true -Actual $defaultResult.result.doctor.accepted -Message "Automatically generated Doctor result accepted"
     Assert-Equal -Expected "0.2.1" -Actual $defaultResult.result.doctor.scannerVersion -Message "Bundled sibling Doctor scanner discovered automatically"
     Assert-Equal -Expected $false -Actual $defaultResult.result.unity.processStarted -Message "Unsigned fake never starts through production verifier"
@@ -474,9 +475,13 @@ try {
     Assert-Equal -Expected "0.2.1" -Actual $savedDoctor.scannerVersion -Message "External raw Doctor scanner"
     Assert-True -Condition (-not (Test-OrchestrationPathWithinRoot -Path $savedDoctorPath -Root $projectRoot)) -Message "Doctor JSON is outside source project"
     Assert-True -Condition (-not ($savedDoctorBytes.Length -ge 3 -and $savedDoctorBytes[0] -eq 0xEF -and $savedDoctorBytes[1] -eq 0xBB -and $savedDoctorBytes[2] -eq 0xBF)) -Message "Doctor JSON is UTF-8 without BOM"
-    Assert-True -Condition ($savedDoctorPath -match 'unity-baseline-orchestration-[0-9a-f]{32}\\doctor\\unity-project-doctor\.json$') -Message "Doctor artifact uses fixed session layout"
+    Assert-True -Condition ($savedDoctorPath -match '\\ubv\\o-[0-9a-f]{32}\\d\\unity-project-doctor\.json$') -Message "Doctor artifact uses short default session layout"
     $orchestrationSession = Split-Path -Parent (Split-Path -Parent $savedDoctorPath)
-    Assert-Equal -Expected (Get-OrchestrationNormalizedPath (Join-Path $orchestrationSession "baseline")) -Actual (Get-OrchestrationNormalizedPath $defaultResult.result.isolation.artifactsRoot) -Message "Verifier artifacts are nested below orchestration baseline"
+    $defaultArtifactsRoot = Split-Path -Parent $orchestrationSession
+    Assert-Equal -Expected (Get-OrchestrationNormalizedPath (Join-Path $defaultArtifactsRoot "b")) -Actual (Get-OrchestrationNormalizedPath $defaultResult.result.isolation.artifactsRoot) -Message "Verifier receives the short baseline parent outside the orchestration GUID"
+    Assert-True -Condition (-not (Test-OrchestrationPathWithinRoot -Path $defaultResult.result.isolation.artifactsRoot -Root $orchestrationSession)) -Message "Verifier artifact parent is not nested below the orchestration GUID"
+    Assert-True -Condition ([string]$defaultResult.result.isolation.sessionRoot -match '\\ubv\\b\\unity-baseline-verification-[0-9a-f]{32}$') -Message "Low-level verifier retains its own GUID session under the short baseline parent"
+    Assert-Equal -Expected (Get-OrchestrationNormalizedPath (Join-Path ([System.IO.Path]::GetTempPath()) "ubv")) -Actual (Get-OrchestrationNormalizedPath $defaultArtifactsRoot) -Message "Default orchestration root is TEMP ubv"
     Assert-True -Condition (Test-OrchestrationPathWithinRoot -Path $orchestrationSession -Root ([System.IO.Path]::GetTempPath())) -Message "Default artifacts use system temporary storage"
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $savedDoctorPath) "doctor-stderr.log") -PathType Leaf) -Message "Doctor stderr log is external and present"
 
@@ -506,10 +511,20 @@ try {
     Assert-Equal -Expected $defaultResult.result.schemaVersion -Actual $prettyResult.result.schemaVersion -Message "Pretty preserves schema meaning"
     Assert-Equal -Expected $defaultResult.result.doctor.warningCount -Actual $prettyResult.result.doctor.warningCount -Message "Pretty preserves Doctor warnings"
     Assert-Equal -Expected (Get-OrchestrationNormalizedPath $projectLocalUnity) -Actual (Get-OrchestrationNormalizedPath $prettyResult.result.unity.executablePath) -Message "UNITY_EDITOR_PATH auto-resolution reaches verifier"
+    Assert-Equal -Expected (Get-OrchestrationNormalizedPath (Join-Path $prettyArtifacts "b")) -Actual (Get-OrchestrationNormalizedPath $prettyResult.result.isolation.artifactsRoot) -Message "Explicit artifact root also uses the separate short baseline parent"
     Assert-Contains -Collection @($prettyResult.result.blockers | ForEach-Object code) -Expected "UNITY_EXECUTABLE_INVALID" -Message "Project-local auto-resolved Unity is blocked before execution"
     Assert-True -Condition ((@($prettyResult.result.blockers | Where-Object code -eq "UNITY_EXECUTABLE_INVALID" | ForEach-Object message) -join " ").Contains("inside the original project")) -Message "Project-local Unity blocker preserves exact safety reason"
     Assert-Equal -Expected $prettyResult.raw.TrimEnd("`r", "`n") -Actual ([System.IO.File]::ReadAllText($prettyResult.result.artifacts.resultPath, $script:Utf8NoBom)).TrimEnd("`r", "`n") -Message "Final stdout is the low-level verifier result artifact"
     Assert-True -Condition (-not (Test-Path -LiteralPath $fakeExecutionMarker)) -Message "Pretty auto-resolution still cannot run unsigned fake"
+
+    $repeatResult = Invoke-OrchestratorCase -CaseName "shared-root-repeat" -ScriptPath $script:OrchestratorPath -WorkingDirectory $projectRoot -ProjectRoot $projectRoot -ArtifactsRoot $prettyArtifacts -UnityExecutable $fakeUnity
+    Register-OrchestrationArtifacts -CaseResult $repeatResult
+    $prettyDoctorSession = Split-Path -Parent (Split-Path -Parent ([string]$prettyResult.result.doctor.sourcePath))
+    $repeatDoctorSession = Split-Path -Parent (Split-Path -Parent ([string]$repeatResult.result.doctor.sourcePath))
+    Assert-True -Condition (-not [string]::Equals($prettyDoctorSession, $repeatDoctorSession, [System.StringComparison]::OrdinalIgnoreCase)) -Message "Repeated runs under one root receive distinct orchestration GUIDs"
+    Assert-True -Condition (-not [string]::Equals([string]$prettyResult.result.isolation.sessionRoot, [string]$repeatResult.result.isolation.sessionRoot, [System.StringComparison]::OrdinalIgnoreCase)) -Message "Repeated runs under one baseline parent receive distinct verifier GUIDs"
+    Assert-Equal -Expected (Get-OrchestrationNormalizedPath (Join-Path $prettyArtifacts "b")) -Actual (Get-OrchestrationNormalizedPath $repeatResult.result.isolation.artifactsRoot) -Message "Repeated run shares only the intentional short baseline parent"
+    Assert-Equal -Expected $savedDoctorRaw -Actual ([System.IO.File]::ReadAllText($savedDoctorPath, $script:Utf8NoBom)) -Message "Later GUID sessions do not overwrite the first Doctor artifact"
 
     $containerRoot = Join-Path $script:ScratchRoot "exact-root-container"
     [void][System.IO.Directory]::CreateDirectory($containerRoot)

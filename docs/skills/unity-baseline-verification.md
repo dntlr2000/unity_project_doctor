@@ -1,6 +1,6 @@
 # Unity Baseline Verification 0.2.0
 
-Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. Component 0.2.0 adds a one-command orchestration layer that creates fresh Doctor evidence and resolves the exact Unity executable before delegating to the unchanged, approved low-level verifier 0.1.2.
+Unity Baseline Verification is an explicit-only Codex Skill that checks a Unity 6000.0.69f1 script-compilation baseline without opening the original project in Unity. Component 0.2.0 adds a one-command orchestration layer that creates fresh Doctor evidence and resolves the exact Unity executable before delegating to fail-closed low-level verifier 0.1.3.
 
 Tests, Player Build, PlayMode, and runtime behavior are always `NOT_VERIFIED`.
 
@@ -36,7 +36,7 @@ exact ProjectRoot
 → bundled Doctor scanner child process
 → raw external Doctor JSON and stderr log
 → exact-version Unity.exe resolution
-→ approved verify-unity-baseline.ps1 child process
+→ bundled verify-unity-baseline.ps1 child process
 → unchanged verifier JSON stdout
 ~~~
 
@@ -65,19 +65,24 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $entrypoint `
 
 ## Artifact layout
 
-When `-ArtifactsRoot` is omitted, the orchestrator uses the existing Baseline-compatible system temporary root. It creates one session:
+When `-ArtifactsRoot` is omitted, the orchestrator uses `%TEMP%\ubv`. An explicit safe root uses the same compact layout:
 
 ~~~text
 <ArtifactsRoot>/
-└─ unity-baseline-orchestration-<guid>/
-   ├─ doctor/
-   │  ├─ unity-project-doctor.json
-   │  └─ doctor-stderr.log
-   └─ baseline/
-      └─ unity-baseline-verification-<guid>/...
+├─ o-<guid>/
+│  └─ d/
+│     ├─ unity-project-doctor.json
+│     └─ doctor-stderr.log
+└─ b/
+   └─ unity-baseline-verification-<guid>/
+      ├─ logs/
+      ├─ results/
+      └─ project/
 ~~~
 
-The Doctor stdout is stored as UTF-8 without BOM without JSON reserialization. Scanner nonzero exit, empty stdout, or malformed JSON makes the Doctor input unusable and prevents Unity. An artifact root inside the source project or behind a reparse point is never written through and produces a structured low-level blocker.
+The one-command GUID isolates Doctor artifacts. The low-level verifier receives `<ArtifactsRoot>\b`, not a directory below that orchestration GUID, and creates its own GUID session so concurrent invocations remain isolated while the project destination stays short. The Doctor stdout is stored as UTF-8 without BOM without JSON reserialization. Scanner nonzero exit, empty stdout, or malformed JSON makes the Doctor input unusable and prevents Unity. An artifact root inside the source project or behind a reparse point is never written through and produces a structured low-level blocker.
+
+Before the verifier creates the isolated `project` directory or copies a source file, it calculates every absolute destination path in the exact copy-set. Directory destinations must be shorter than 248 characters and file destinations shorter than 260 characters. A path at either boundary is blocked as `ISOLATION_DIRECTORY_PATH_BUDGET_EXCEEDED` or `ISOLATION_FILE_PATH_BUDGET_EXCEEDED`; a calculation failure is `ISOLATION_PATH_BUDGET_CHECK_FAILED`. Each blocker reports the exact destination path, relative source path, measured length, and boundary through the existing structured blocker/evidence shape. No long-path filesystem failure is treated as successful or inconclusive compilation evidence.
 
 ## Safety contract
 
@@ -86,6 +91,7 @@ The Doctor stdout is stored as UTF-8 without BOM without JSON reserialization. S
 - Logs, captured streams, result JSON, the Job Object session, and the copied project stay outside the source project.
 - The source root, Doctor JSON, Unity.exe, artifact root, and copy-included package paths must not traverse reparse points.
 - The exact source project must not already be open through a running `Unity.exe -projectPath` argument. Unrelated Unity projects are not blocked.
+- Source-editor preflight first enumerates processes with `Get-Process`. When that independent observation reports zero Unity processes, it records `PASSED` without calling CIM. When any Unity process exists, every still-running observed PID requires readable CIM CommandLine and one safely normalized `-projectPath`; unavailable or incomplete live-process evidence remains blocked.
 - Two Doctor/Baseline copy-set snapshots must be identical before copying, and another must still match before Unity starts.
 - The copy-set pre/post directory list, file list, file lengths, and per-file SHA-256 values must remain identical. Generated, tooling, agent, IDE, and version-control trees excluded from isolation are outside this content proof.
 - The in-project `.git` entry is hashed separately. New paths strictly under `.git/refs/codex/turn-diffs/checkpoints/` are recorded as ambient metadata and do not invalidate unchanged project content.
@@ -95,7 +101,7 @@ The Doctor stdout is stored as UTF-8 without BOM without JSON reserialization. S
 
 ## Doctor schema and migration
 
-The low-level verifier 0.1.2 recognizes two Doctor contracts:
+The low-level verifier 0.1.3 recognizes two Doctor contracts:
 
 | Doctor contract | Static-audit validity | Baseline eligibility |
 | --- | --- | --- |
@@ -229,7 +235,7 @@ The path classification identifies a reserved namespace; it does not claim which
 
 ## Result contract compatibility
 
-Baseline component 0.2.0 forwards the existing result unchanged. Result `schemaVersion` remains 1.1.0 and `verifierVersion` remains 0.1.2 because the trust core did not change. The four final status names are unchanged:
+Baseline component 0.2.0 forwards the verifier result without reserialization. Result `schemaVersion` remains 1.1.0 and `verifierVersion` is 0.1.3 for the Windows source-editor preflight compatibility fix. The four final status names are unchanged:
 
 | finalStatus | Meaning |
 | --- | --- |
@@ -257,6 +263,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1
 ~~~
 
-CI uses plain Windows PowerShell and installs neither Unity nor external packages. The Baseline suite includes resolver and orchestration tests for exact CWD, raw Doctor handoff, warning preservation, resolver precedence, unsafe artifacts, malformed/nonzero scanners, JSON-only stdout, and Pretty formatting. The unsigned fake executable is blocked by both the one-command production path and the direct low-level entrypoint. It is invoked only through the existing internal process-control and shared log-analysis seam to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
+CI uses plain Windows PowerShell and installs neither Unity nor external packages. The Baseline suite includes resolver and orchestration tests for exact CWD, raw Doctor handoff, warning preservation, resolver precedence, unsafe artifacts, malformed/nonzero scanners, JSON-only stdout, Pretty formatting, the compact `%TEMP%\ubv` layout, and separate GUID isolation. It also models the observed 125-character ColorGateRush relative file path and proves the conservative Windows boundaries: 247-character directories and 259-character files are accepted, while 248-character directories and 260-character files are blocked before copying. The unsigned fake executable is blocked by both the one-command production path and the direct low-level entrypoint. It is invoked only through the existing internal process-control and shared log-analysis seam to verify arguments, exit codes, log classification, parent/child timeout termination, and delayed-sentinel suppression.
 
-Regression tests also prove that checkpoint-only additions are accepted while HEAD, index, config, hook, and ordinary-ref changes remain blocking. The historical low-level gate passed on 2026-08-15; its anonymized evidence is recorded in the [0.1.2 real-Unity acceptance result](../validation/v0.1.2-real-unity-acceptance-result.md). That result does not approve the new orchestration path. Follow the separate [0.2.0 one-command acceptance procedure](../validation/v0.2.0-baseline-orchestration-acceptance.md) for a future explicit signed-Unity run. The prior [0.1.2 procedure](../validation/v0.1.2-original-integrity-acceptance.md) and [0.1.1 procedure](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md) remain historical evidence.
+Regression tests also prove that checkpoint-only additions are accepted while HEAD, index, config, hook, and ordinary-ref changes remain blocking. The historical low-level gate passed on 2026-08-15; its anonymized evidence is recorded in the [0.1.2 real-Unity acceptance result](../validation/v0.1.2-real-unity-acceptance-result.md). That result does not approve verifier 0.1.3 or the new orchestration path. Follow the separate [0.2.0 one-command acceptance procedure](../validation/v0.2.0-baseline-orchestration-acceptance.md) for a future explicit signed-Unity run. The prior [0.1.2 procedure](../validation/v0.1.2-original-integrity-acceptance.md) and [0.1.1 procedure](../validation/v0.1.1-unity-baseline-real-unity-acceptance.md) remain historical evidence.

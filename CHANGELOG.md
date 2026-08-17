@@ -12,30 +12,42 @@
 - Automatic direct invocation of the bundled Doctor 0.2.1 scanner with raw UTF-8-no-BOM JSON and separate stderr artifacts outside the source project
 - Deterministic exact-version Unity.exe resolution through explicit override, `UNITY_EDITOR_PATH`, `UNITY_HUB_EDITOR_ROOT`, Program Files, and Program Files (x86)
 - Orchestration and resolver regression coverage for exact CWD, no parent/child search, warning preservation, scanner failures, unsafe artifact roots, JSON-only stdout, and Pretty formatting
+- Deterministic pre-copy path-budget assessment with structured directory/file destination evidence and 248/260-character boundary coverage
 - A future signed-Unity 0.2.0 one-command acceptance procedure that does not claim execution or approval
 
 #### Changed
 
 - `unity-baseline-verification` component version is now `0.2.0`
 - The default Skill workflow no longer requires users to create a Doctor JSON file or identify a normal Unity Hub executable path before the first attempt
-- Skill metadata and documentation now distinguish component 0.2.0 orchestration from the unchanged low-level verifier 0.1.2 trust core
+- The default orchestration root is shortened to `%TEMP%\ubv`; Doctor evidence uses `o-<guid>\d`, while low-level verifier sessions use the separate shared parent `b` and retain their own GUID isolation
+- Skill metadata and documentation now distinguish component 0.2.0 orchestration from low-level verifier 0.1.3
+
+#### Fixed
+
+- Windows source-editor preflight now uses a successful `Get-Process` enumeration first and skips CIM only when it independently proves that zero `Unity.exe` processes are running
+- Running Unity processes still require complete CIM CommandLine and exact `-projectPath` evidence; denied, missing, duplicate, or otherwise inconclusive live-process evidence remains fail-closed as `SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE`
+- A Unity PID that exits between `Get-Process` and CIM is accepted only after a PID recheck confirms the normal process-exit race
+- One-command isolation no longer nests the low-level verifier session under a long orchestration GUID path, avoiding false copy failures for the observed 125-character ColorGateRush relative file path
+- Every full copy destination is now checked before the project copy directory is created; directory paths at 248 characters and file paths at 260 characters are blocked with structured evidence instead of relying on a later filesystem error
 
 #### Compatibility
 
 - Repository `VERSION` remains `0.3.0`; the published `v0.3.0` tag and Release remain historical and unchanged
 - Doctor remains `0.2.1` with schema `1.1.0`
-- Low-level verifier metadata remains `0.1.2`, Baseline result schema remains `1.1.0`, and all four final status meanings are unchanged
+- Low-level verifier metadata is `0.1.3`; Baseline result schema remains `1.1.0`, and all four final status meanings are unchanged
 - The existing manual `DoctorResultPath` plus `UnityExecutable` reproduction mode remains supported
 
 #### Security
 
-- The orchestrator never starts Unity or Unity Hub; only the approved low-level verifier may start Unity after full trust validation
+- The orchestrator never starts Unity or Unity Hub; only the bundled fail-closed low-level verifier may start Unity after full trust validation
 - Scanner nonzero exit, empty stdout, malformed JSON, unsupported editor version, missing executable, in-project artifacts, and reparse artifacts all prevent Unity
+- An unavailable path-budget calculation or any destination at the conservative Windows boundary remains fail-closed before source copying or Unity startup
 - No recursive drive search, registry mutation, Unity installation/update, signature bypass, package installation, source modification, automatic repair, or implicit Skill invocation was added
 
 #### Validation
 
 - Doctor fixture/schema/fingerprint tests, low-level Baseline regression tests, and orchestration/resolver tests run without a Unity installation or external package
+- Regression coverage includes the 125-character ColorGateRush relative-path case, 247/248 directory destinations, and 259/260 file destinations
 - The unsigned Unity-shaped fixture remains blocked by the production verifier and is never admitted through a public or hidden bypass
 - No real Unity, Unity Hub, or signed-editor acceptance run is claimed for component 0.2.0
 

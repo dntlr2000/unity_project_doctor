@@ -1,6 +1,6 @@
 ---
 name: unity-baseline-verification
-description: "Verify a Unity 6000.0.69f1 script-compilation baseline from one explicit $unity-baseline-verification invocation by running the bundled Doctor scanner, resolving an exact Unity.exe candidate, and delegating all trust, isolation, process-tree, log, and integrity decisions to the approved low-level verifier. Use only when the user explicitly writes $unity-baseline-verification; never infer it from ordinary requests to compile, inspect, test, build, debug, or open a Unity project."
+description: "Verify a Unity 6000.0.69f1 script-compilation baseline from one explicit $unity-baseline-verification invocation by running the bundled Doctor scanner, resolving an exact Unity.exe candidate, and delegating all trust, isolation, process-tree, log, and integrity decisions to the fail-closed low-level verifier. Use only when the user explicitly writes $unity-baseline-verification; never infer it from ordinary requests to compile, inspect, test, build, debug, or open a Unity project."
 ---
 
 # Unity Baseline Verification v0.2.0
@@ -30,6 +30,8 @@ The entrypoint must:
 5. Invoke `scripts/verify-unity-baseline.ps1`, which remains the only component allowed to start Unity.
 6. Return the verifier stdout unchanged as the sole JSON stdout document.
 
+By default, keep the orchestration root at `%TEMP%\ubv`. Preserve Doctor evidence under `o-<guid>\d`, and pass the separate `<ArtifactsRoot>\b` parent to the low-level verifier. The Doctor GUID and the verifier's own session GUID must keep concurrent runs isolated without nesting both GUID paths.
+
 Never launch Unity Hub, search a drive recursively, choose a nearby Unity version, install or update Unity, or treat executable discovery as trust approval. The low-level verifier must still validate exact version, filename, reparse safety, Authenticode status, Unity Technologies signer, and SHA-256.
 
 If automatic discovery fails, report the verifier's blocker and show this optional retry only when the user supplies a known exact executable:
@@ -46,13 +48,14 @@ Do not promote a failed scanner, empty or malformed Doctor stdout, missing execu
 - Never create or modify a file under the original project, including `Assets`, `Packages`, `ProjectSettings`, `UserSettings`, or `.git`.
 - Reject a reparse-point project root and an artifact root inside the project or behind a reparse point.
 - Keep Doctor JSON, logs, streams, copied project, and Baseline result under an external session.
+- Before creating the isolated project copy, require every full destination directory path to be shorter than 248 characters and every file path to be shorter than 260 characters. Report any boundary violation as a structured blocker; do not retry with another hidden path or infer that copying would succeed.
 - Never execute a project-local script, executable, Git hook, test, scene, player, or build.
 - Never pass `-runTests`, `-executeMethod`, build arguments, `-accept-apiupdate`, or `-ignorecompilererrors`.
 - Never install packages, modules, SDKs, certificate bundles, or other dependencies.
 - Never repair, migrate, update, clean, format, roll back, or refactor the project.
 - Preserve unknown evidence as `NOT_VERIFIED`; never infer success from missing evidence.
 
-Keep the approved low-level verifier responsible for complete Doctor schema/fingerprint validation, source-editor preflight, local `file:` package safety, executable trust, Job Object process control, Editor.log classification, copy-set integrity, Git metadata integrity, and final status.
+Keep the fail-closed low-level verifier responsible for complete Doctor schema/fingerprint validation, source-editor preflight, local `file:` package safety, executable trust, Job Object process control, Editor.log classification, copy-set integrity, Git metadata integrity, and final status.
 
 ## Treat verifier JSON as authoritative
 
@@ -69,7 +72,7 @@ If the result is `ORIGINAL_PROJECT_CHANGED`, report exact paths and stop. Do not
 
 ## Retain direct reproduction mode
 
-Use the approved low-level entrypoint directly only when the user explicitly provides or requests a saved Doctor result and exact Unity path for reproduction:
+Use the bundled low-level entrypoint directly only when the user explicitly provides or requests a saved Doctor result and exact Unity path for reproduction:
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>\scripts\verify-unity-baseline.ps1 -ProjectRoot <absolute-project-root> -DoctorResultPath <absolute-doctor-json-path> -UnityExecutable <absolute-6000.0.69f1-Unity.exe-path> -Pretty

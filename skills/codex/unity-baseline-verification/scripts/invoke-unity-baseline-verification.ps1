@@ -114,7 +114,7 @@ function Test-OrchestrationArtifactRoot {
     }
 }
 
-# Creates one unique external orchestration session and its fixed subdirectories.
+# Creates one short external Doctor session and a shared short verifier parent.
 function New-OrchestrationArtifactSession {
     param(
         [Parameter(Mandatory = $true)]
@@ -132,15 +132,17 @@ function New-OrchestrationArtifactSession {
         throw "The created orchestration root traverses reparse point $rootReparsePoint."
     }
     $sessionRoot = Join-Path -Path $normalizedRoot -ChildPath (
-        "unity-baseline-orchestration-" + [guid]::NewGuid().ToString("N")
+        "o-" + [guid]::NewGuid().ToString("N")
     )
-    $doctorRoot = Join-Path -Path $sessionRoot -ChildPath "doctor"
-    $baselineRoot = Join-Path -Path $sessionRoot -ChildPath "baseline"
+    $doctorRoot = Join-Path -Path $sessionRoot -ChildPath "d"
+    $baselineRoot = Join-Path -Path $normalizedRoot -ChildPath "b"
     [void][System.IO.Directory]::CreateDirectory($doctorRoot)
     [void][System.IO.Directory]::CreateDirectory($baselineRoot)
-    $sessionReparsePoint = Get-OrchestrationReparsePointOnPath -Path $sessionRoot
-    if ($null -ne $sessionReparsePoint) {
-        throw "The orchestration session traverses reparse point $sessionReparsePoint."
+    foreach ($createdPath in @($sessionRoot, $doctorRoot, $baselineRoot)) {
+        $createdReparsePoint = Get-OrchestrationReparsePointOnPath -Path $createdPath
+        if ($null -ne $createdReparsePoint) {
+            throw "The orchestration artifact path traverses reparse point $createdReparsePoint."
+        }
     }
 
     return [pscustomobject][ordered]@{
@@ -186,7 +188,7 @@ try {
     Write-OrchestrationDiagnostic -Message "ProjectRoot preflight failed; the low-level verifier will return the structured blocker: $($_.Exception.Message)"
 }
 
-$defaultArtifactsRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "unity-baseline-verification"
+$defaultArtifactsRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath "ubv"
 $requestedArtifactsRoot = if ([string]::IsNullOrWhiteSpace($ArtifactsRoot)) {
     $defaultArtifactsRoot
 } else {

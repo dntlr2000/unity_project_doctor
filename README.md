@@ -100,6 +100,7 @@ unity_agent_pipeline/
 │           ├── invoke-unity-baseline-verification.ps1
 │           ├── verify-unity-baseline.ps1
 │           ├── lib/unity-baseline-orchestration.ps1
+│           ├── lib/unity-isolation-path-budget.ps1
 │           └── lib/git-metadata-integrity.ps1
 └── tests/
     ├── fixtures/...

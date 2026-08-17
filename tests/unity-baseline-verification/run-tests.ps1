@@ -14,10 +14,12 @@ $script:SchemaValidatorPath = Join-Path -Path $script:RepositoryRoot -ChildPath 
 $script:ProcessLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1"
 $script:EditorLogLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1"
 $script:GitIntegrityLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\git-metadata-integrity.ps1"
+$script:IsolationPathBudgetLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-isolation-path-budget.ps1"
 $script:FingerprintLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
 $script:OrchestratorPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\invoke-unity-baseline-verification.ps1"
 $script:OrchestrationLibraryPath = Join-Path -Path $script:RepositoryRoot -ChildPath "skills\codex\unity-baseline-verification\scripts\lib\unity-baseline-orchestration.ps1"
 $script:OrchestrationTestsPath = Join-Path -Path $script:RepositoryRoot -ChildPath "tests\unity-baseline-verification\orchestration\run-tests.ps1"
+$script:SourceEditorFixtureHarnessPath = Join-Path -Path $script:RepositoryRoot -ChildPath "tests\unity-baseline-verification\helpers\invoke-verifier-with-source-editor-fixture.ps1"
 $script:InstallerPath = Join-Path -Path $script:RepositoryRoot -ChildPath "scripts\install-codex-skills.ps1"
 $script:ScratchRoot = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("unity-baseline-verification-tests-" + [guid]::NewGuid().ToString("N"))
 $script:Assertions = 0
@@ -115,6 +117,29 @@ function Test-PathWithinRoot {
         $normalizedRoot + [System.IO.Path]::DirectorySeparatorChar,
         [System.StringComparison]::OrdinalIgnoreCase
     )
+}
+
+# Builds one relative test path whose normalized destination has an exact length.
+function New-TestRelativePathForDestinationLength {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationRoot,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TargetLength,
+
+        [Parameter()]
+        [switch]$File
+    )
+
+    $normalizedRoot = Get-NormalizedPath -Path $DestinationRoot
+    $relativeLength = $TargetLength - $normalizedRoot.Length - 1
+    $suffix = if ($File) { ".cs" } else { "" }
+    if ($relativeLength -le $suffix.Length) {
+        throw "Target length $TargetLength is too short for destination root $normalizedRoot."
+    }
+
+    return ("p" * ($relativeLength - $suffix.Length)) + $suffix
 }
 
 # Captures a compact file-list and SHA-256 snapshot with an optional top-level .git exclusion.
@@ -446,7 +471,11 @@ function Invoke-Verifier {
 
         [Parameter()]
         [AllowNull()]
-        [string]$MutationPath
+        [string]$MutationPath,
+
+        [Parameter()]
+        [AllowNull()]
+        [string]$SourceEditorFixtureScenario
     )
 
     $caseRoot = Join-Path -Path $script:ScratchRoot -ChildPath ("cases\" + $CaseName)
@@ -456,16 +485,33 @@ function Invoke-Verifier {
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = "powershell.exe"
-    $argumentValues = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $script:VerifierPath,
-        "-ProjectRoot", $ProjectRoot,
-        "-DoctorResultPath", $DoctorPath,
-        "-UnityExecutable", $UnityPath,
-        "-ArtifactsRoot", $artifactsRoot,
-        "-TimeoutSeconds", "60"
-    )
+    $cimCallMarkerPath = Join-Path -Path $caseRoot -ChildPath 'cim-calls.log'
+    if ([string]::IsNullOrWhiteSpace($SourceEditorFixtureScenario)) {
+        $argumentValues = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $script:VerifierPath,
+            "-ProjectRoot", $ProjectRoot,
+            "-DoctorResultPath", $DoctorPath,
+            "-UnityExecutable", $UnityPath,
+            "-ArtifactsRoot", $artifactsRoot,
+            "-TimeoutSeconds", "60"
+        )
+    } else {
+        $argumentValues = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $script:SourceEditorFixtureHarnessPath,
+            "-VerifierPath", $script:VerifierPath,
+            "-Scenario", $SourceEditorFixtureScenario,
+            "-CimCallMarkerPath", $cimCallMarkerPath,
+            "-ProjectRoot", $ProjectRoot,
+            "-DoctorResultPath", $DoctorPath,
+            "-UnityExecutable", $UnityPath,
+            "-ArtifactsRoot", $artifactsRoot,
+            "-TimeoutSeconds", "60"
+        )
+    }
     $quotedArguments = foreach ($argument in $argumentValues) {
         if ([string]$argument -match "[\s]") {
             '"' + ([string]$argument) + '"'
@@ -511,6 +557,7 @@ function Invoke-Verifier {
             json = $stdout
             result = $result
             argumentsPath = $argumentsPath
+            cimCallMarkerPath = $cimCallMarkerPath
         }
     } finally {
         $process.Dispose()
@@ -649,9 +696,11 @@ try {
         'skills\codex\unity-baseline-verification\scripts\lib\unity-process-job.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\unity-editor-log.ps1',
         'skills\codex\unity-baseline-verification\scripts\lib\git-metadata-integrity.ps1',
+        'skills\codex\unity-baseline-verification\scripts\lib\unity-isolation-path-budget.ps1',
         'skills\codex\unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1',
         'scripts\install-codex-skills.ps1',
         'tests\unity-baseline-verification\run-tests.ps1',
+        'tests\unity-baseline-verification\helpers\invoke-verifier-with-source-editor-fixture.ps1',
         'tests\unity-baseline-verification\orchestration\run-tests.ps1',
         '.github\workflows\baseline-static-tests.yml'
     )) {
@@ -687,7 +736,8 @@ try {
     }
     $verifierContent = Get-Content -Raw -LiteralPath $script:VerifierPath
     Assert-True -Condition ($verifierContent -notmatch '(?i)SkipSignatureCheck|TestMode') -Message 'Production verifier exposes no trust bypass flag'
-    Assert-True -Condition ($verifierContent.Contains('$script:VerifierVersion = "0.1.2"')) -Message 'Low-level verifier remains at approved metadata version 0.1.2'
+    Assert-True -Condition ($verifierContent -notmatch '(?i)SourceEditorFixture|PREFLIGHT_SCENARIO') -Message 'Production verifier exposes no source-editor fixture hook'
+    Assert-True -Condition ($verifierContent.Contains('$script:VerifierVersion = "0.1.3"')) -Message 'Low-level verifier source-editor compatibility metadata version 0.1.3'
     $orchestratorContent = Get-Content -Raw -LiteralPath $script:OrchestratorPath
     Assert-True -Condition ($orchestratorContent.Contains('$script:BaselineComponentVersion = "0.2.0"')) -Message 'Orchestration component metadata version'
     foreach ($finalStatus in @('BASELINE_VERIFIED', 'BASELINE_FAILED', 'VERIFICATION_BLOCKED', 'ORIGINAL_PROJECT_CHANGED')) {
@@ -709,7 +759,80 @@ try {
     . $script:ProcessLibraryPath
     . $script:EditorLogLibraryPath
     . $script:GitIntegrityLibraryPath
+    . $script:IsolationPathBudgetLibraryPath
     . $script:FingerprintLibraryPath
+
+    $shortProjectDestination = Join-Path ([System.IO.Path]::GetTempPath()) "ubv\b\unity-baseline-verification-00000000000000000000000000000000\project"
+    $colorGateRushPrefix = "Assets/Scripts/Generated/"
+    $colorGateRushRelativePath = $colorGateRushPrefix + ("c" * (125 - $colorGateRushPrefix.Length - 3)) + ".cs"
+    Assert-Equal -Expected 125 -Actual $colorGateRushRelativePath.Length -Message 'ColorGateRush longest relative file path regression length'
+    $colorGateRushSnapshot = [pscustomobject]@{
+        directories = @("Assets", "Assets/Scripts", "Assets/Scripts/Generated")
+        files = @([pscustomobject]@{ path = $colorGateRushRelativePath })
+    }
+    $colorGateRushBudget = Get-UnityIsolationPathBudgetAssessment -Snapshot $colorGateRushSnapshot -Destination $shortProjectDestination
+    Assert-Equal -Expected $true -Actual $colorGateRushBudget.accepted -Message 'Short ubv layout accepts the 125-character ColorGateRush relative path'
+    Assert-Equal -Expected ((Get-NormalizedPath $shortProjectDestination).Length + 126) -Actual $colorGateRushBudget.maximumFilePathLength -Message 'ColorGateRush destination length calculation'
+    Assert-Equal -Expected 0 -Actual $colorGateRushBudget.violations.Count -Message 'ColorGateRush path has no budget violation'
+
+    $boundaryDestination = Join-Path ([System.IO.Path]::GetTempPath()) "ubv\budget"
+    $directory247 = New-TestRelativePathForDestinationLength -DestinationRoot $boundaryDestination -TargetLength 247
+    $directory248 = New-TestRelativePathForDestinationLength -DestinationRoot $boundaryDestination -TargetLength 248
+    $directory247Budget = Get-UnityIsolationPathBudgetAssessment -Snapshot ([pscustomobject]@{ directories = @($directory247); files = @() }) -Destination $boundaryDestination
+    $directory248Budget = Get-UnityIsolationPathBudgetAssessment -Snapshot ([pscustomobject]@{ directories = @($directory248); files = @() }) -Destination $boundaryDestination
+    Assert-Equal -Expected $true -Actual $directory247Budget.accepted -Message '247-character directory destination remains within budget'
+    Assert-Equal -Expected 247 -Actual $directory247Budget.maximumDirectoryPathLength -Message '247-character directory boundary calculation'
+    Assert-Equal -Expected $false -Actual $directory248Budget.accepted -Message '248-character directory destination is blocked before copy'
+    Assert-Equal -Expected 1 -Actual $directory248Budget.violations.Count -Message '248-character directory yields one structured violation'
+    Assert-Equal -Expected 'ISOLATION_DIRECTORY_PATH_BUDGET_EXCEEDED' -Actual $directory248Budget.violations[0].code -Message '248-character directory blocker code'
+    Assert-Equal -Expected 248 -Actual $directory248Budget.violations[0].characterCount -Message '248-character directory evidence length'
+    Assert-Equal -Expected 248 -Actual $directory248Budget.violations[0].boundary -Message 'Directory boundary evidence'
+    Assert-Equal -Expected (Get-UnityIsolationDestinationPath -DestinationRoot $boundaryDestination -RelativePath $directory248) -Actual $directory248Budget.violations[0].destinationPath -Message 'Directory violation reports exact destination path'
+
+    $file259 = New-TestRelativePathForDestinationLength -DestinationRoot $boundaryDestination -TargetLength 259 -File
+    $file260 = New-TestRelativePathForDestinationLength -DestinationRoot $boundaryDestination -TargetLength 260 -File
+    $file259Budget = Get-UnityIsolationPathBudgetAssessment -Snapshot ([pscustomobject]@{ directories = @(); files = @([pscustomobject]@{ path = $file259 }) }) -Destination $boundaryDestination
+    $file260Budget = Get-UnityIsolationPathBudgetAssessment -Snapshot ([pscustomobject]@{ directories = @(); files = @([pscustomobject]@{ path = $file260 }) }) -Destination $boundaryDestination
+    Assert-Equal -Expected $true -Actual $file259Budget.accepted -Message '259-character file destination remains within budget'
+    Assert-Equal -Expected 259 -Actual $file259Budget.maximumFilePathLength -Message '259-character file boundary calculation'
+    Assert-Equal -Expected $false -Actual $file260Budget.accepted -Message '260-character file destination is blocked before copy'
+    Assert-Equal -Expected 1 -Actual $file260Budget.violations.Count -Message '260-character file yields one structured violation'
+    Assert-Equal -Expected 'ISOLATION_FILE_PATH_BUDGET_EXCEEDED' -Actual $file260Budget.violations[0].code -Message '260-character file blocker code'
+    Assert-Equal -Expected 260 -Actual $file260Budget.violations[0].characterCount -Message '260-character file evidence length'
+    Assert-Equal -Expected 260 -Actual $file260Budget.violations[0].boundary -Message 'File boundary evidence'
+    Assert-Equal -Expected (Get-UnityIsolationDestinationPath -DestinationRoot $boundaryDestination -RelativePath $file260) -Actual $file260Budget.violations[0].path -Message 'File violation blocker path is the exact destination'
+
+    $verifierTokens = $null
+    $verifierParseErrors = $null
+    $verifierAst = [System.Management.Automation.Language.Parser]::ParseFile($script:VerifierPath, [ref]$verifierTokens, [ref]$verifierParseErrors)
+    Assert-Equal -Expected 0 -Actual @($verifierParseErrors).Count -Message 'Verifier functions are extractable for isolated path-budget integration'
+    foreach ($functionName in @('Add-Evidence', 'Add-Blocker', 'Test-IsolationDestinationPathBudget')) {
+        $functionDefinitions = @($verifierAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+        }, $true))
+        Assert-Equal -Expected 1 -Actual $functionDefinitions.Count -Message "One production function definition exists for $functionName"
+        . ([scriptblock]::Create($functionDefinitions[0].Extent.Text))
+    }
+
+    $wrapperDestination = Join-Path $script:ScratchRoot 'path-budget-wrapper-project'
+    $wrapperFile260 = New-TestRelativePathForDestinationLength -DestinationRoot $wrapperDestination -TargetLength 260 -File
+    $wrapperSnapshot = [pscustomobject]@{
+        directories = @()
+        files = @([pscustomobject]@{ path = $wrapperFile260 })
+    }
+    Assert-True -Condition (-not (Test-Path -LiteralPath $wrapperDestination)) -Message 'Production path-budget wrapper destination starts absent'
+    $script:Blockers = New-Object System.Collections.ArrayList
+    $script:Evidence = New-Object System.Collections.ArrayList
+    $script:EvidenceSequence = 0
+    Test-IsolationDestinationPathBudget -Snapshot $wrapperSnapshot -Destination $wrapperDestination
+    Assert-Equal -Expected 1 -Actual $script:Blockers.Count -Message 'Production wrapper emits one structured blocker for an exact 260-character file'
+    Assert-Equal -Expected 'ISOLATION_FILE_PATH_BUDGET_EXCEEDED' -Actual $script:Blockers[0].code -Message 'Production wrapper preserves path-budget blocker code'
+    Assert-Equal -Expected 'isolationPathBudget' -Actual $script:Blockers[0].check -Message 'Production wrapper preserves path-budget check name'
+    Assert-Equal -Expected 260 -Actual ([string]$script:Blockers[0].path).Length -Message 'Production wrapper reports the exact 260-character destination path'
+    Assert-True -Condition ([string]$script:Blockers[0].message -match [regex]::Escape($wrapperFile260)) -Message 'Production wrapper reports the relative source path'
+    Assert-Contains -Collection @($script:Evidence | ForEach-Object status) -Expected 'BLOCKED' -Message 'Production wrapper emits matching blocked evidence'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $wrapperDestination)) -Message 'Production path-budget wrapper creates no destination before blocking'
 
     $ambientProject = New-TestUnityProject -Name 'git-ambient-checkpoint'
     Initialize-TestGitMetadata -ProjectRoot $ambientProject
@@ -846,6 +969,76 @@ try {
     Assert-Equal -Expected 0 -Actual $validSchemaErrors.Count -Message 'Valid full Doctor output schema errors'
     Assert-Equal -Expected 'COMPUTED' -Actual $validDoctorObject.projectFingerprint.status -Message 'Doctor fingerprint status'
 
+    $zeroUnityPreflight = Invoke-Verifier -CaseName 'preflight-zero-unity-cim-denied' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'zero-cim-denied'
+    Assert-Equal -Expected $true -Actual $zeroUnityPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Zero Unity process preflight completed'
+    Assert-Equal -Expected $false -Actual $zeroUnityPreflight.result.preflight.sourceEditorDetected -Message 'Zero Unity process source editor not detected'
+    Assert-Equal -Expected 0 -Actual @($zeroUnityPreflight.result.preflight.sourceEditorProcessIds).Count -Message 'Zero Unity process IDs'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $zeroUnityPreflight.cimCallMarkerPath)) -Message 'Zero Unity process skips CIM entirely'
+    Assert-Contains -Collection @($zeroUnityPreflight.result.evidence | Where-Object check -eq 'sourceEditorPreflight' | ForEach-Object status) -Expected 'PASSED' -Message 'Zero Unity process preflight evidence passed'
+    Assert-True -Condition (@($zeroUnityPreflight.result.blockers | ForEach-Object code) -notcontains 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE') -Message 'Zero Unity process has no unavailable blocker'
+    Assert-Equal -Expected $false -Actual $zeroUnityPreflight.result.unity.processStarted -Message 'Zero Unity fixture never starts Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $zeroUnityPreflight.argumentsPath)) -Message 'Zero Unity fixture has no executable invocation marker'
+
+    $getProcessDeniedPreflight = Invoke-Verifier -CaseName 'preflight-get-process-denied' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'get-process-denied'
+    Assert-Equal -Expected $false -Actual $getProcessDeniedPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Get-Process denial leaves preflight incomplete'
+    Assert-True -Condition ($null -eq $getProcessDeniedPreflight.result.preflight.sourceEditorDetected) -Message 'Get-Process denial leaves editor detection unknown'
+    Assert-Contains -Collection @($getProcessDeniedPreflight.result.blockers | ForEach-Object code) -Expected 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE' -Message 'Get-Process denial blocker'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $getProcessDeniedPreflight.cimCallMarkerPath)) -Message 'Get-Process denial does not proceed to CIM'
+    Assert-Equal -Expected $false -Actual $getProcessDeniedPreflight.result.unity.processStarted -Message 'Get-Process denial prevents Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $getProcessDeniedPreflight.argumentsPath)) -Message 'Get-Process denial has no executable invocation marker'
+
+    $cimDeniedPreflight = Invoke-Verifier -CaseName 'preflight-unity-cim-denied' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'cim-denied'
+    Assert-Equal -Expected $false -Actual $cimDeniedPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Unity process plus CIM denial leaves preflight incomplete'
+    Assert-True -Condition ($null -eq $cimDeniedPreflight.result.preflight.sourceEditorDetected) -Message 'Unity process plus CIM denial leaves editor detection unknown'
+    Assert-Contains -Collection @($cimDeniedPreflight.result.blockers | ForEach-Object code) -Expected 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE' -Message 'Unity process plus CIM denial blocker'
+    Assert-True -Condition (Test-Path -LiteralPath $cimDeniedPreflight.cimCallMarkerPath -PathType Leaf) -Message 'Unity process requires one CIM attempt'
+    Assert-Equal -Expected 1 -Actual @(Get-Content -LiteralPath $cimDeniedPreflight.cimCallMarkerPath).Count -Message 'Unity process performs exactly one CIM query'
+    Assert-Equal -Expected $false -Actual $cimDeniedPreflight.result.unity.processStarted -Message 'CIM denial prevents Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $cimDeniedPreflight.argumentsPath)) -Message 'CIM denial has no executable invocation marker'
+
+    $sourceOpenPreflight = Invoke-Verifier -CaseName 'preflight-source-project-open' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'source-project-open'
+    Assert-Equal -Expected $true -Actual $sourceOpenPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Source project open preflight completed'
+    Assert-Equal -Expected $true -Actual $sourceOpenPreflight.result.preflight.sourceEditorDetected -Message 'Source project open detected'
+    Assert-Equal -Expected '4102' -Actual ([string]::Join(',', [string[]]@($sourceOpenPreflight.result.preflight.sourceEditorProcessIds))) -Message 'Source project exact PID result evidence'
+    Assert-Contains -Collection @($sourceOpenPreflight.result.blockers | ForEach-Object code) -Expected 'SOURCE_PROJECT_OPEN_IN_UNITY' -Message 'Source project open blocker'
+    $sourceOpenEvidence = @($sourceOpenPreflight.result.evidence | Where-Object check -eq 'preflight' | Where-Object status -eq 'BLOCKED')
+    Assert-True -Condition (@($sourceOpenEvidence | Where-Object { $_.detail -like '*4102*' }).Count -gt 0) -Message 'Source project exact PID ledger evidence'
+    Assert-True -Condition (@($sourceOpenPreflight.result.blockers | ForEach-Object code) -notcontains 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE') -Message 'Source project open is conclusive, not unavailable'
+    Assert-Equal -Expected $false -Actual $sourceOpenPreflight.result.unity.processStarted -Message 'Source project open prevents Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $sourceOpenPreflight.argumentsPath)) -Message 'Source project open has no executable invocation marker'
+
+    $otherOpenPreflight = Invoke-Verifier -CaseName 'preflight-other-project-open' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'other-project-open'
+    Assert-Equal -Expected $true -Actual $otherOpenPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Other project preflight completed'
+    Assert-Equal -Expected $false -Actual $otherOpenPreflight.result.preflight.sourceEditorDetected -Message 'Other project not misclassified as source'
+    Assert-Equal -Expected 0 -Actual @($otherOpenPreflight.result.preflight.sourceEditorProcessIds).Count -Message 'Other project has no source PID evidence'
+    Assert-True -Condition (@($otherOpenPreflight.result.blockers | ForEach-Object code) -notcontains 'SOURCE_PROJECT_OPEN_IN_UNITY') -Message 'Other project has no source-open blocker'
+    Assert-True -Condition (@($otherOpenPreflight.result.blockers | ForEach-Object code) -notcontains 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE') -Message 'Other project is safely inspectable'
+    Assert-Contains -Collection @($otherOpenPreflight.result.evidence | Where-Object check -eq 'sourceEditorPreflight' | ForEach-Object status) -Expected 'PASSED' -Message 'Other project preflight evidence passed'
+    Assert-Equal -Expected $false -Actual $otherOpenPreflight.result.unity.processStarted -Message 'Other project fixture never starts unsigned Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $otherOpenPreflight.argumentsPath)) -Message 'Other project fixture has no executable invocation marker'
+
+    $exitRacePreflight = Invoke-Verifier -CaseName 'preflight-process-exit-race' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'process-exit-race'
+    Assert-Equal -Expected $true -Actual $exitRacePreflight.result.preflight.sourceEditorCheckCompleted -Message 'Exited Unity PID race completes preflight'
+    Assert-Equal -Expected $false -Actual $exitRacePreflight.result.preflight.sourceEditorDetected -Message 'Exited Unity PID is not a source editor'
+    Assert-True -Condition (@($exitRacePreflight.result.blockers | ForEach-Object code) -notcontains 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE') -Message 'Confirmed process exit race does not block'
+    Assert-Contains -Collection @($exitRacePreflight.result.evidence | Where-Object check -eq 'sourceEditorPreflight' | ForEach-Object status) -Expected 'PASSED' -Message 'Confirmed process exit race evidence passed'
+    Assert-Equal -Expected $false -Actual $exitRacePreflight.result.unity.processStarted -Message 'Process exit race fixture never starts unsigned Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $exitRacePreflight.argumentsPath)) -Message 'Process exit race fixture has no executable invocation marker'
+
+    $missingLivePidPreflight = Invoke-Verifier -CaseName 'preflight-cim-pid-missing-live' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'cim-pid-missing-live'
+    Assert-Equal -Expected $false -Actual $missingLivePidPreflight.result.preflight.sourceEditorCheckCompleted -Message 'Live PID missing from CIM leaves preflight incomplete'
+    Assert-True -Condition ($null -eq $missingLivePidPreflight.result.preflight.sourceEditorDetected) -Message 'Live PID missing from CIM leaves detection unknown'
+    Assert-Contains -Collection @($missingLivePidPreflight.result.blockers | ForEach-Object code) -Expected 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE' -Message 'Live PID missing from CIM blocker'
+    Assert-Equal -Expected $false -Actual $missingLivePidPreflight.result.unity.processStarted -Message 'Live PID missing from CIM prevents Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $missingLivePidPreflight.argumentsPath)) -Message 'Live PID missing from CIM has no executable invocation marker'
+
+    $missingCommandLinePreflight = Invoke-Verifier -CaseName 'preflight-command-line-missing' -ProjectRoot $validProject -DoctorPath $validDoctor -UnityPath $fakeUnity -SourceEditorFixtureScenario 'command-line-missing'
+    Assert-Equal -Expected $false -Actual $missingCommandLinePreflight.result.preflight.sourceEditorCheckCompleted -Message 'Missing CommandLine leaves preflight incomplete'
+    Assert-True -Condition ($null -eq $missingCommandLinePreflight.result.preflight.sourceEditorDetected) -Message 'Missing CommandLine leaves detection unknown'
+    Assert-Contains -Collection @($missingCommandLinePreflight.result.blockers | ForEach-Object code) -Expected 'SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE' -Message 'Missing CommandLine blocker'
+    Assert-Equal -Expected $false -Actual $missingCommandLinePreflight.result.unity.processStarted -Message 'Missing CommandLine prevents Unity'
+    Assert-True -Condition (-not (Test-Path -LiteralPath $missingCommandLinePreflight.argumentsPath)) -Message 'Missing CommandLine has no executable invocation marker'
+
     $secondDoctor = Join-Path $script:ScratchRoot 'doctor\valid-second.json'
     Write-DoctorResult -Path $secondDoctor -ProjectRoot $validProject
     $secondDoctorObject = Get-Content -Raw -LiteralPath $secondDoctor | ConvertFrom-Json
@@ -891,7 +1084,7 @@ try {
     $validAfter = Get-TestTreeSnapshot -Root $validProject
     Assert-Equal -Expected 'VERIFICATION_BLOCKED' -Actual $unsignedProduction.result.finalStatus -Message 'Unsigned production final status'
     Assert-Equal -Expected '1.1.0' -Actual $unsignedProduction.result.schemaVersion -Message 'Baseline result schema version'
-    Assert-Equal -Expected '0.1.2' -Actual $unsignedProduction.result.verifierVersion -Message 'Baseline verifier version'
+    Assert-Equal -Expected '0.1.3' -Actual $unsignedProduction.result.verifierVersion -Message 'Baseline verifier version'
     Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.accepted -Message 'Valid full Doctor accepted'
     Assert-Equal -Expected $true -Actual $unsignedProduction.result.doctor.fingerprintMatched -Message 'Doctor/current fingerprint matched'
     Assert-Equal -Expected $false -Actual $unsignedProduction.result.unity.processStarted -Message 'Unsigned fake blocked before process start'

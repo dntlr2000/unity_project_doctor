@@ -29,7 +29,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:SchemaVersion = "1.1.0"
-$script:VerifierVersion = "0.1.2"
+$script:VerifierVersion = "0.1.3"
 $script:ExpectedDoctorSchemaVersion = "1.1.0"
 $script:ExpectedDoctorScannerVersion = "0.2.1"
 $script:LegacyDoctorSchemaVersion = "1.0.0"
@@ -38,6 +38,7 @@ $script:ValidatorLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\jso
 $script:ProcessLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-process-job.ps1"
 $script:EditorLogLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-editor-log.ps1"
 $script:GitIntegrityLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\git-metadata-integrity.ps1"
+$script:IsolationPathBudgetLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath "lib\unity-isolation-path-budget.ps1"
 $script:CodexSkillsRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:FingerprintLibraryPath = Join-Path -Path $script:CodexSkillsRoot -ChildPath "unity-project-doctor\scripts\lib\unity-project-fingerprint.ps1"
 $script:IsWindowsPlatform = $env:OS -eq "Windows_NT"
@@ -427,59 +428,157 @@ function ConvertFrom-WindowsProcessCommandLine {
     return [string[]]$arguments.ToArray()
 }
 
-# Finds only running Unity Editor processes whose -projectPath equals the source project.
+# Captures the running Unity Editor PID set without requiring CIM or process command lines.
+function Get-RunningUnityEditorProcessSnapshot {
+    if (-not $script:IsWindowsPlatform) {
+        throw 'Unity process preflight requires Windows.'
+    }
+
+    $unityProcesses = New-Object System.Collections.ArrayList
+    foreach ($process in @(Get-Process -ErrorAction Stop)) {
+        if (-not [string]::Equals([string]$process.ProcessName, 'Unity', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        [void]$unityProcesses.Add([pscustomobject][ordered]@{
+            processId = [int]$process.Id
+            processName = [string]$process.ProcessName
+        })
+    }
+
+    return @($unityProcesses | Sort-Object -Property processId -Unique)
+}
+
+# Rechecks whether an observed PID still exists, treating only a confirmed not-found result as a normal exit race.
+function Test-UnityEditorProcessStillRunning {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$ProcessId
+    )
+
+    try {
+        $process = @(Get-Process -Id $ProcessId -ErrorAction Stop | Where-Object {
+            [string]::Equals([string]$_.ProcessName, 'Unity', [System.StringComparison]::OrdinalIgnoreCase)
+        })
+        return $process.Count -gt 0
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound) {
+            return $false
+        }
+        throw
+    }
+}
+
+# Uses CIM only after Unity is observed and checks every live candidate whose exact -projectPath can be proven.
 function Get-SourceProjectUnityProcesses {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$SourceProjectRoot
+        [string]$SourceProjectRoot,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [object[]]$RunningUnityProcesses
     )
 
     if (-not $script:IsWindowsPlatform) {
         throw 'Unity process preflight requires Windows.'
     }
 
+    if ($RunningUnityProcesses.Count -eq 0) {
+        return @()
+    }
+
     $matches = New-Object System.Collections.ArrayList
-    $unityProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'Unity.exe'" -ErrorAction Stop)
-    foreach ($unityProcess in $unityProcesses) {
-        if ([string]::IsNullOrWhiteSpace([string]$unityProcess.CommandLine)) {
+    $cimProcesses = @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'Unity.exe'" -ErrorAction Stop)
+    $candidateProcessIds = New-Object 'System.Collections.Generic.List[int]'
+    foreach ($runningProcess in @($RunningUnityProcesses)) {
+        $candidateProcessIds.Add([int]$runningProcess.processId)
+    }
+    foreach ($cimProcess in @($cimProcesses)) {
+        if ($null -eq $cimProcess.PSObject.Properties['ProcessId']) {
+            throw 'A Unity CIM record did not contain ProcessId.'
+        }
+        $candidateProcessId = 0
+        if (-not [int]::TryParse([string]$cimProcess.ProcessId, [ref]$candidateProcessId) -or $candidateProcessId -lt 1) {
+            throw "A Unity CIM record contained an invalid ProcessId: $($cimProcess.ProcessId)."
+        }
+        $candidateProcessIds.Add($candidateProcessId)
+    }
+
+    foreach ($processId in @($candidateProcessIds | Sort-Object -Unique)) {
+        $cimMatches = @($cimProcesses | Where-Object { [int]$_.ProcessId -eq $processId })
+        if ($cimMatches.Count -ne 1) {
+            if (Test-UnityEditorProcessStillRunning -ProcessId $processId) {
+                throw "Running Unity process ID $processId could not be matched to exactly one CIM record."
+            }
             continue
         }
+
+        $unityProcess = $cimMatches[0]
+        if (-not (Test-UnityEditorProcessStillRunning -ProcessId $processId)) {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$unityProcess.CommandLine)) {
+            throw "CommandLine was unavailable for running Unity process ID $processId."
+        }
+
         $arguments = @(ConvertFrom-WindowsProcessCommandLine -CommandLine ([string]$unityProcess.CommandLine))
+        $projectPathArguments = New-Object 'System.Collections.Generic.List[string]'
         for ($argumentIndex = 0; $argumentIndex + 1 -lt $arguments.Count; $argumentIndex++) {
             if (-not [string]::Equals($arguments[$argumentIndex], '-projectPath', [System.StringComparison]::OrdinalIgnoreCase)) {
                 continue
             }
-            try {
-                $observedProjectPath = Get-NormalizedAbsolutePath -Path $arguments[$argumentIndex + 1]
-                if ($observedProjectPath.Equals($SourceProjectRoot, $script:PathComparison)) {
-                    [void]$matches.Add([pscustomobject][ordered]@{
-                        processId = [int]$unityProcess.ProcessId
-                        executablePath = $unityProcess.ExecutablePath
-                        projectPath = $observedProjectPath
-                    })
-                }
-            } catch {
-            }
-            break
+            $projectPathArguments.Add([string]$arguments[$argumentIndex + 1])
+            $argumentIndex++
+        }
+
+        if ($projectPathArguments.Count -ne 1 -or [string]::IsNullOrWhiteSpace($projectPathArguments[0])) {
+            throw "A single readable -projectPath argument was unavailable for running Unity process ID $processId."
+        }
+        if (-not [System.IO.Path]::IsPathRooted($projectPathArguments[0])) {
+            throw "The -projectPath argument for running Unity process ID $processId was not absolute."
+        }
+
+        try {
+            $observedProjectPath = Get-NormalizedAbsolutePath -Path $projectPathArguments[0]
+        } catch {
+            throw "The -projectPath argument for running Unity process ID $processId could not be normalized safely: $($_.Exception.Message)"
+        }
+
+        if ($observedProjectPath.Equals($SourceProjectRoot, $script:PathComparison)) {
+            [void]$matches.Add([pscustomobject][ordered]@{
+                processId = $processId
+                executablePath = $unityProcess.ExecutablePath
+                projectPath = $observedProjectPath
+            })
         }
     }
     return @($matches)
 }
 
-# Blocks only when a running Unity Editor is associated with the exact source project path.
+# Passes without CIM only after Get-Process proves zero Unity processes; otherwise inspects every live candidate fail-closed.
 function Test-SourceProjectEditorPreflight {
     try {
-        $matches = @(Get-SourceProjectUnityProcesses -SourceProjectRoot $script:NormalizedProjectRoot)
+        $runningUnityProcesses = @(Get-RunningUnityEditorProcessSnapshot)
         $script:Result.preflight.sourceEditorCheckCompleted = $true
-        $script:Result.preflight.sourceEditorProcessIds = @($matches | ForEach-Object { $_.processId })
+        $script:Result.preflight.sourceEditorProcessIds = @()
+        if ($runningUnityProcesses.Count -eq 0) {
+            $script:Result.preflight.sourceEditorDetected = $false
+            Add-Evidence -Check "sourceEditorPreflight" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "Get-Process reported zero running Unity.exe processes; CIM command-line inspection was not required."
+            return
+        }
+
+        $matches = @(Get-SourceProjectUnityProcesses -SourceProjectRoot $script:NormalizedProjectRoot -RunningUnityProcesses $runningUnityProcesses)
+        $script:Result.preflight.sourceEditorProcessIds = @($matches | ForEach-Object { $_.processId } | Sort-Object -Unique)
         $script:Result.preflight.sourceEditorDetected = $matches.Count -gt 0
         if ($matches.Count -gt 0) {
             Add-Blocker -Code "SOURCE_PROJECT_OPEN_IN_UNITY" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "The exact source project is already associated with running Unity process ID(s): $([string]::Join(', ', [string[]]@($script:Result.preflight.sourceEditorProcessIds)))."
         } else {
-            Add-Evidence -Check "sourceEditorPreflight" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "No running Unity.exe -projectPath argument matched the exact source project; unrelated Unity projects were not blocked."
+            Add-Evidence -Check "sourceEditorPreflight" -Status "PASSED" -Source $script:NormalizedProjectRoot -Detail "Get-Process found $($runningUnityProcesses.Count) running Unity.exe process(es); CIM safely associated every still-running process with a different project or confirmed a normal exit race."
         }
     } catch {
         $script:Result.preflight.sourceEditorCheckCompleted = $false
+        $script:Result.preflight.sourceEditorProcessIds = @()
         $script:Result.preflight.sourceEditorDetected = $null
         Add-Blocker -Code "SOURCE_EDITOR_PREFLIGHT_UNAVAILABLE" -Check "preflight" -Path $script:NormalizedProjectRoot -Message "Running Unity process association could not be inspected safely: $($_.Exception.Message)"
     }
@@ -911,6 +1010,34 @@ function Copy-ProjectToIsolation {
     }
 }
 
+# Reports every unsafe copy destination before the isolated project directory is created.
+function Test-IsolationDestinationPathBudget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Snapshot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $assessment = Get-UnityIsolationPathBudgetAssessment -Snapshot $Snapshot -Destination $Destination
+    foreach ($violation in @($assessment.violations)) {
+        Add-Blocker `
+            -Code ([string]$violation.code) `
+            -Check ([string]$violation.check) `
+            -Path ([string]$violation.path) `
+            -Message ([string]$violation.message)
+    }
+
+    if ($assessment.accepted) {
+        Add-Evidence `
+            -Check "isolationPathBudget" `
+            -Status "PASSED" `
+            -Source $assessment.destinationRoot `
+            -Detail "Every copy destination is below the Windows path boundaries: longest directory $($assessment.maximumDirectoryPathLength)/247 characters and longest file $($assessment.maximumFilePathLength)/259 characters."
+    }
+}
+
 # Decodes a file-package path repeatedly so percent-encoded escape syntax cannot bypass checks.
 function ConvertFrom-LocalPackagePathEncoding {
     param(
@@ -1290,7 +1417,7 @@ function Test-DoctorResult {
     $script:Result.doctor.projectFingerprint = $doctorFingerprint
 
     if ([string]$schemaVersion -eq $script:LegacyDoctorSchemaVersion) {
-        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_CONTRACT_REQUIRED" -Message "Doctor schema 1.0.0 remains valid for static audit, but Baseline v0.1.2 requires schema 1.1.0 copy-set fingerprint evidence." -JsonPath '$.schemaVersion' -Keyword 'const'
+        Add-DoctorValidationError -Code "DOCTOR_FINGERPRINT_CONTRACT_REQUIRED" -Message "Doctor schema 1.0.0 remains valid for static audit, but Baseline verifier 0.1.3 requires schema 1.1.0 copy-set fingerprint evidence." -JsonPath '$.schemaVersion' -Keyword 'const'
         return
     }
     if ([string]$scannerVersion -ne $script:ExpectedDoctorScannerVersion) {
@@ -1835,7 +1962,7 @@ function Set-GitMetadataAssessmentResult {
     $script:Result.gitMetadataIntegrity.disallowedAddedFiles = @($Assessment.disallowedAddedFiles)
 }
 
-# Returns true only for Git metadata states that preserve the v0.1.2 integrity contract.
+# Returns true only for Git metadata states that preserve the Baseline integrity contract.
 function Test-GitMetadataIntegrityAccepted {
     param(
         [Parameter(Mandatory = $true)]
@@ -1944,6 +2071,7 @@ try {
             $script:ProcessLibraryPath,
             $script:EditorLogLibraryPath,
             $script:GitIntegrityLibraryPath,
+            $script:IsolationPathBudgetLibraryPath,
             $script:FingerprintLibraryPath
         )) {
             if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
@@ -2013,6 +2141,16 @@ try {
     }
 
     if ($null -ne $script:OriginalSnapshotBefore) {
+        if ($script:Blockers.Count -eq 0) {
+            try {
+                Test-IsolationDestinationPathBudget `
+                    -Snapshot $script:OriginalSnapshotBefore `
+                    -Destination $script:Result.isolation.projectCopyPath
+            } catch {
+                Add-Blocker -Code "ISOLATION_PATH_BUDGET_CHECK_FAILED" -Check "isolationPathBudget" -Path $script:Result.isolation.projectCopyPath -Message "Isolation destination paths could not be evaluated safely before copying: $($_.Exception.Message)"
+            }
+        }
+
         try {
             if ($script:Blockers.Count -eq 0) {
                 $copyResult = Copy-ProjectToIsolation -Snapshot $script:OriginalSnapshotBefore -Destination $script:Result.isolation.projectCopyPath
@@ -2126,7 +2264,7 @@ try {
 }
 
 foreach ($scopeName in @("tests", "playerBuild", "playMode", "runtime")) {
-    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "v0.1.2 scope" -Detail $script:Result.verification.$scopeName.reason
+    Add-Evidence -Check $scopeName -Status "NOT_VERIFIED" -Source "$($script:VerifierVersion) scope" -Detail $script:Result.verification.$scopeName.reason
 }
 
 $finalJson = ConvertTo-FinalJson
