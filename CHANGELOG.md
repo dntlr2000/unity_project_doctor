@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+현재 미공개 변경 사항 없음.
+
+## Unity Agent Pipeline 0.4.0 - 2026-08-17
+
+저장소 Release 버전은 `0.4.0`이며 component 버전은 다음과 같이 독립적으로 유지한다.
+
+- `unity-project-doctor`: `0.2.1`
+- `unity-baseline-verification`: `0.2.0`
+
 ### Unity Baseline Verification 0.2.0 one-command orchestration
 
 #### Added
@@ -13,7 +22,7 @@
 - Deterministic exact-version Unity.exe resolution through explicit override, `UNITY_EDITOR_PATH`, `UNITY_HUB_EDITOR_ROOT`, Program Files, and Program Files (x86)
 - Orchestration and resolver regression coverage for exact CWD, no parent/child search, warning preservation, scanner failures, unsafe artifact roots, JSON-only stdout, and Pretty formatting
 - Deterministic pre-copy path-budget assessment with structured directory/file destination evidence and 248/260-character boundary coverage
-- A future signed-Unity 0.2.0 one-command acceptance procedure that does not claim execution or approval
+- A public-safe acceptance record for the signed-Unity 0.2.0 one-command run, approved for isolated script compilation only
 
 #### Changed
 
@@ -32,7 +41,7 @@
 
 #### Compatibility
 
-- Repository `VERSION` remains `0.3.0`; the published `v0.3.0` tag and Release remain historical and unchanged
+- Repository `VERSION` is now `0.4.0`; the published `v0.3.0` tag and Release remain historical and unchanged
 - Doctor remains `0.2.1` with schema `1.1.0`
 - Low-level verifier metadata is `0.1.3`; Baseline result schema remains `1.1.0`, and all four final status meanings are unchanged
 - The existing manual `DoctorResultPath` plus `UnityExecutable` reproduction mode remains supported
@@ -49,7 +58,8 @@
 - Doctor fixture/schema/fingerprint tests, low-level Baseline regression tests, and orchestration/resolver tests run without a Unity installation or external package
 - Regression coverage includes the 125-character ColorGateRush relative-path case, 247/248 directory destinations, and 259/260 file destinations
 - The unsigned Unity-shaped fixture remains blocked by the production verifier and is never admitted through a public or hidden bypass
-- No real Unity, Unity Hub, or signed-editor acceptance run is claimed for component 0.2.0
+- A signed Unity `6000.0.69f1` one-command run returned `BASELINE_VERIFIED` with script compilation `VERIFIED_SUCCESS`, zero compiler errors, and unchanged source copy-set and Git metadata
+- The signed-Unity approval is limited to Script Compilation; tests, Player Build, PlayMode, gameplay, runtime, release readiness, and other Unity versions remain `NOT_VERIFIED`
 
 ## Unity Agent Pipeline 0.3.0 - 2026-08-15
 

@@ -18,13 +18,13 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 - 새 orchestrator는 sibling Doctor scanner를 직접 실행하고 원문 JSON을 외부 artifact에 저장한다. 별도 `$unity-project-doctor` Skill을 암묵적으로 호출하지 않는다.
 - Unity.exe는 명시적 override, `UNITY_EDITOR_PATH`, `UNITY_HUB_EDITOR_ROOT`, Program Files, Program Files (x86) 순으로 exact `6000.0.69f1`만 확인한다.
 - Unity Hub 실행, registry/drive 검색, 다른 버전 대체, 설치 및 업데이트는 하지 않는다.
-- 기존 `verify-unity-baseline.ps1` 0.1.2가 Unity를 시작할 수 있는 유일한 컴포넌트이며 결과 `schemaVersion: 1.1.0`과 네 final status를 그대로 유지한다.
-- 실제 signed-Unity one-command 승인은 아직 수행하지 않았다. [0.2.0 승인 절차](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)는 미래 gate만 정의한다.
+- 기존 `verify-unity-baseline.ps1` 0.1.3이 Unity를 시작할 수 있는 유일한 컴포넌트이며 결과 `schemaVersion: 1.1.0`과 네 final status를 그대로 유지한다.
+- 실제 signed-Unity one-command 실행은 2026-08-17에 [APPROVED — SCRIPT COMPILATION ONLY](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)로 승인됐다. Tests, Player Build, PlayMode 및 runtime은 승인 범위가 아니다.
 
-## 0.1.2 저수준 원본 무결성 판정
+## 저수준 verifier 0.1.3과 원본 무결성 판정
 
 - Doctor scanner 0.2.1은 별도 계약 파일인 `schemaVersion: 1.1.0`을 출력하고, Baseline이 복사하는 파일 집합의 안정된 SHA-256 fingerprint를 포함한다.
-- 기존 `schemas/unity-project-audit.schema.json`의 1.0.0 계약은 수정하지 않았다. 저장된 scanner 0.2.0 결과는 계속 유효한 정적 감사 자료지만 fingerprint가 없어 저수준 verifier 0.1.2에서는 Unity 실행 전에 차단된다.
+- 기존 `schemas/unity-project-audit.schema.json`의 1.0.0 계약은 수정하지 않았다. 저장된 scanner 0.2.0 결과는 계속 유효한 정적 감사 자료지만 fingerprint가 없어 저수준 verifier 0.1.3에서는 Unity 실행 전에 차단된다.
 - Baseline은 선택된 Doctor schema 전체를 외부 모듈 없이 검사하며 중첩 enum/type/required/additionalProperties 오류의 정확한 JSON path를 반환한다.
 - `file:` package는 상대 경로만 허용되며 절대·UNC·device·authority·encoded escape·excluded tree·reparse 경로는 원본과 격리 양쪽 검증 전에 차단된다.
 - Unity.exe는 ProductVersion뿐 아니라 유효한 Unity Technologies Authenticode signer가 필요하다. 결과에는 회사명, signer subject, certificate thumbprint와 executable SHA-256이 남는다.
@@ -76,6 +76,7 @@ unity_agent_pipeline/
 │   ├── skills/unity-baseline-verification.md
 │   ├── skills/unity-project-doctor.md
 │   ├── releases/v0.3.0.md
+│   ├── releases/v0.4.0.md
 │   ├── validation/v0.1.1-unity-baseline-real-unity-acceptance.md
 │   ├── validation/v0.1.2-original-integrity-acceptance.md
 │   ├── validation/v0.1.2-real-unity-acceptance-result.md
@@ -415,8 +416,8 @@ v0.1은 Codex가 SKILL.md 절차를 직접 해석하는 instruction-only audit�
 - Doctor는 원본 Unity 프로젝트를 완전한 읽기 전용으로 정적 감사한다.
 - Baseline orchestrator는 bundled scanner를 직접 재사용하며 `$unity-project-doctor` Skill을 암묵적으로 호출하지 않는다.
 - 저수준 verifier는 Doctor와 동일한 copy set으로 원본 콘텐츠를 보호하고, `.git` metadata를 별도 분류하며, 외부 임시 위치에 만든 격리 복사본에만 검증된 Unity.exe를 실행한다.
-- Baseline component 0.2.0과 저수준 verifier 0.1.2는 script compilation 근거만 다루며 tests, Player Build, PlayMode 및 runtime은 `NOT_VERIFIED`로 유지한다.
+- Baseline component 0.2.0과 저수준 verifier 0.1.3은 script compilation 근거만 다루며 tests, Player Build, PlayMode 및 runtime은 `NOT_VERIFIED`로 유지한다.
 
 자세한 전제조건, 실행 명령, 결과 상태 및 안전 계약은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)를 따른다.
 
-실제 서명된 Unity를 사용하는 검증은 자동 테스트 범위가 아니다. 기존 저수준 verifier 0.1.2의 승인 결과는 [실제 Unity 승인 결과](docs/validation/v0.1.2-real-unity-acceptance-result.md)와 [v0.3.0 Release 노트](docs/releases/v0.3.0.md)에 보존한다. 새 one-command 흐름은 사용자가 승인 대상 프로젝트에서 `$unity-baseline-verification`을 명시적으로 호출하여 [v0.2.0 orchestration 승인 절차](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)를 별도로 통과하기 전까지 실제 Unity 승인을 주장하지 않는다.
+실제 서명된 Unity를 사용하는 검증은 자동 테스트 범위가 아니다. 기존 저수준 verifier 0.1.2의 승인 결과는 [실제 Unity 승인 결과](docs/validation/v0.1.2-real-unity-acceptance-result.md)와 [v0.3.0 Release 노트](docs/releases/v0.3.0.md)에 보존한다. Baseline 0.2.0 one-command 흐름은 2026-08-17에 별도로 실행됐고 [승인 기록](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)에 `APPROVED — SCRIPT COMPILATION ONLY`로 봉인됐다. 이 승인은 tests, Player Build, PlayMode, gameplay, runtime 또는 release readiness를 증명하지 않는다.

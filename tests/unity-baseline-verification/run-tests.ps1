@@ -680,6 +680,7 @@ try {
         'docs\skills\unity-baseline-verification.md',
         'docs\skills\unity-project-doctor.md',
         'docs\releases\v0.3.0.md',
+        'docs\releases\v0.4.0.md',
         'docs\validation\v0.1.1-unity-baseline-real-unity-acceptance.md',
         'docs\validation\v0.1.2-original-integrity-acceptance.md',
         'docs\validation\v0.1.2-real-unity-acceptance-result.md',
@@ -707,7 +708,7 @@ try {
         Assert-True -Condition (Test-Path -LiteralPath (Join-Path $script:RepositoryRoot $requiredRelativePath) -PathType Leaf) -Message "Required file $requiredRelativePath"
     }
 
-    Assert-Equal -Expected '0.3.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'VERSION')).Trim()) -Message 'Repository VERSION'
+    Assert-Equal -Expected '0.4.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'VERSION')).Trim()) -Message 'Repository VERSION'
     Assert-Equal -Expected '0.2.0' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\VERSION')).Trim()) -Message 'Baseline Skill VERSION'
     Assert-Equal -Expected '0.2.1' -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-project-doctor\VERSION')).Trim()) -Message 'Doctor Skill VERSION'
     $acceptanceResultContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\validation\v0.1.2-real-unity-acceptance-result.md')
@@ -722,6 +723,17 @@ try {
     Assert-True -Condition ($releaseNotesContent.Contains('This file records invariant release requirements')) -Message 'Release notes durable publication semantics'
     Assert-True -Condition ($releaseNotesContent.Contains('`$unity-project-doctor` | `0.2.1`')) -Message 'Release notes Doctor component version'
     Assert-True -Condition ($releaseNotesContent.Contains('`$unity-baseline-verification` | `0.1.2`')) -Message 'Release notes Baseline component version'
+    $currentReleaseNotesContent = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:RepositoryRoot 'docs\releases\v0.4.0.md')
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('Release contract status: **FINAL**')) -Message 'Current release notes final contract state'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('This file records invariant release requirements')) -Message 'Current release notes durable publication semantics'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('`$unity-project-doctor` | `0.2.1`')) -Message 'Current release notes Doctor component version'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('`$unity-baseline-verification` | `0.2.0`')) -Message 'Current release notes Baseline component version'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('Low-level Baseline verifier | `0.1.3`')) -Message 'Current release notes verifier version'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('APPROVED')) -Message 'Current release notes approval scope'
+    Assert-True -Condition ($currentReleaseNotesContent.Contains('Script Compilation')) -Message 'Current release notes Script Compilation limit'
+    Assert-True -Condition (-not $currentReleaseNotesContent.Contains('C:\Users\')) -Message 'Current release notes exclude user-profile paths'
+    Assert-True -Condition (-not $currentReleaseNotesContent.Contains('E:\Unity\')) -Message 'Current release notes exclude source-project paths'
+    Assert-True -Condition (-not $currentReleaseNotesContent.Contains('Woosik')) -Message 'Current release notes exclude local user name'
     $skillContent = Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot 'skills\codex\unity-baseline-verification\SKILL.md')
     Assert-True -Condition ($skillContent -match '^---\r?\nname: unity-baseline-verification\r?\ndescription:') -Message 'Skill frontmatter'
     $frontmatterMatch = [regex]::Match($skillContent, '^---\r?\n(?<body>.*?)\r?\n---', [System.Text.RegularExpressions.RegexOptions]::Singleline)
