@@ -4,7 +4,32 @@
 
 ## Unreleased
 
-현재 미공개 변경 사항 없음.
+저장소 `VERSION`은 봉인된 `0.4.0`을 유지하며 다음 component는 아직 미공개 상태다.
+
+- `unity-editmode-verification`: `0.1.0`
+
+### Added
+
+- 명시적 호출 전용 `$unity-editmode-verification` Skill과 `allow_implicit_invocation=false` 정책
+- fresh Baseline `1.1.0 / verifier 0.1.3` 결과를 검증하는 좁은 handoff schema
+- Doctor `1.1.0 / scanner 0.2.1`의 직접 확정 test assembly만 선택하는 결정론적 EditMode 실행기
+- 같은 Baseline 격리본 재사용, 실행 직전 source/isolation fingerprint와 Unity.exe 신뢰 재검사
+- NUnit 2/3 XML, Editor.log, exit code, Job Object process-tree 및 원본/Git 무결성을 결합한 결과 schema `1.0.0`
+- `EDITMODE_VERIFIED`, `EDITMODE_FAILED`, `NO_CONFIRMED_TEST_ASSEMBLY`, `EDITMODE_BLOCKED`, `ORIGINAL_PROJECT_CHANGED` 상태
+- 외부 프레임워크 없는 unsigned fake-process/XML 회귀와 별도 Windows CI
+
+### Security
+
+- 원본 프로젝트는 Unity에 전달하거나 수정하지 않으며 EditMode 산출물은 `%TEMP%\uev` 아래 GUID session에만 기록
+- candidate-only assembly, `-runSynchronously`, `-quit`, `-executeMethod`, API update, Player Build, PlayMode 및 runtime 실행을 금지
+- Baseline/Doctor/fingerprint/Authenticode/source-editor/XML/process/integrity 증거가 불완전하면 성공으로 승격하지 않음
+- production signature 또는 safety bypass와 외부 package/module 설치를 추가하지 않음
+
+### Validation
+
+- Doctor와 Baseline 기존 회귀, 새 EditMode core/fake-process/XML/source-editor/installer 회귀 및 PowerShell parse 검사를 수행
+- 실제 Unity 또는 Unity Hub를 실행하지 않았으며 signed-Unity EditMode 승인을 주장하지 않음
+- 별도 실제 Unity acceptance gate는 `NOT RUN — PROCEDURE ONLY` 상태로 유지
 
 ## Unity Agent Pipeline 0.4.0 - 2026-08-17
 

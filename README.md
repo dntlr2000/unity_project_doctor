@@ -2,6 +2,7 @@
 
 [![Doctor static fixture tests](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/static-tests.yml)
 [![Baseline fake-Unity tests](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/baseline-static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/baseline-static-tests.yml)
+[![EditMode fake-Unity tests](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/editmode-static-tests.yml/badge.svg)](https://github.com/dntlr2000/unity_agent_pipeline/actions/workflows/editmode-static-tests.yml)
 
 Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시적 호출 전용 Codex Skill 모음이다. Skill 원본, 공용 설치기, 계약, 테스트 및 CI는 이 모노레포에 유지한다.
 
@@ -9,8 +10,9 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 | --- | --- | --- |
 | `$unity-project-doctor` | 0.2.1 | Unity를 실행하지 않는 읽기 전용 정적 감사와 Baseline copy-set fingerprint 생성 |
 | `$unity-baseline-verification` | 0.2.0 | bundled Doctor와 exact Unity.exe를 자동 준비한 뒤 승인된 저수준 verifier로 격리 컴파일 근거와 원본 무결성을 판정 |
+| `$unity-editmode-verification` | 0.1.0 (Unreleased) | fresh Baseline 격리본과 confirmed test assembly만 사용해 EditMode NUnit 결과와 원본 무결성을 판정 |
 
-두 Skill 모두 `allow_implicit_invocation=false`이며 이름을 명시하지 않은 요청에서는 실행되지 않는다. Baseline의 동적 안전 계약과 사용법은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md)에 분리되어 있다.
+세 Skill 모두 `allow_implicit_invocation=false`이며 이름을 명시하지 않은 요청에서는 실행되지 않는다. Baseline의 동적 안전 계약과 사용법은 [Unity Baseline Verification 문서](docs/skills/unity-baseline-verification.md), EditMode 계약은 [Unity EditMode Verification 문서](docs/skills/unity-editmode-verification.md)에 분리되어 있다.
 
 ## Baseline 0.2.0 one-command orchestration
 
@@ -20,6 +22,15 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 - Unity Hub 실행, registry/drive 검색, 다른 버전 대체, 설치 및 업데이트는 하지 않는다.
 - 기존 `verify-unity-baseline.ps1` 0.1.3이 Unity를 시작할 수 있는 유일한 컴포넌트이며 결과 `schemaVersion: 1.1.0`과 네 final status를 그대로 유지한다.
 - 실제 signed-Unity one-command 실행은 2026-08-17에 [APPROVED — SCRIPT COMPILATION ONLY](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)로 승인됐다. Tests, Player Build, PlayMode 및 runtime은 승인 범위가 아니다.
+
+## EditMode Verification 0.1.0 (Unreleased)
+
+- 사용자는 Unity 프로젝트 루트에서 `$unity-editmode-verification으로 현재 프로젝트의 EditMode 테스트를 검증해.`라고 명시적으로 호출한다.
+- production entrypoint는 sibling Baseline one-command를 매 실행마다 새로 호출하고, 좁은 handoff schema로 `BASELINE_VERIFIED`, Doctor 0.2.1/schema 1.1.0, 원본 project root 및 fingerprint를 다시 검증한다.
+- Baseline이 승인한 같은 격리 프로젝트와 exact Unity executable만 재사용하며, Doctor의 `confirmedTestAssemblies`만 `-assemblyNames`에 전달한다. candidate-only evidence는 실행 대상이 아니다.
+- NUnit XML, Editor.log, child exit, signed Unity identity, Job Object process-tree 종료, 원본 copy-set 및 Git metadata를 함께 판정한다.
+- 하나 이상의 passed test와 0 failed/error/inconclusive일 때만 `EDITMODE_VERIFIED`다. skipped test는 warning으로 보존하며 confirmed assembly가 없으면 Unity를 두 번째로 실행하지 않고 `NO_CONFIRMED_TEST_ASSEMBLY`로 끝난다.
+- 실제 signed-Unity 승인은 아직 수행하지 않았다. 현재 테스트는 unsigned fake process와 fixture에 한정되며 PlayMode, Player Build 및 runtime은 항상 `NOT_VERIFIED`다.
 
 ## 저수준 verifier 0.1.3과 원본 무결성 판정
 
@@ -68,12 +79,14 @@ Unity 설치와 외부 PowerShell module은 필요하지 않다. 이 저장소�
 unity_agent_pipeline/
 ├── .github/workflows/
 │   ├── static-tests.yml
-│   └── baseline-static-tests.yml
+│   ├── baseline-static-tests.yml
+│   └── editmode-static-tests.yml
 ├── CHANGELOG.md
 ├── README.md
 ├── VERSION
 ├── docs/
 │   ├── skills/unity-baseline-verification.md
+│   ├── skills/unity-editmode-verification.md
 │   ├── skills/unity-project-doctor.md
 │   ├── releases/v0.3.0.md
 │   ├── releases/v0.4.0.md
@@ -83,6 +96,8 @@ unity_agent_pipeline/
 │   ├── validation/v0.2.0-baseline-orchestration-acceptance.md
 │   └── validation/v0.2.0-real-project-acceptance.md
 ├── schemas/
+│   ├── unity-baseline-editmode-handoff-1.0.0.schema.json
+│   ├── unity-editmode-verification-result-1.0.0.schema.json
 │   ├── unity-project-audit.schema.json
 │   └── unity-project-audit-1.1.0.schema.json
 ├── scripts/
@@ -93,21 +108,29 @@ unity_agent_pipeline/
 │   │   ├── SKILL.md
 │   │   ├── agents/openai.yaml
 │   │   └── scripts/inspect-unity-project.ps1
-│   └── unity-baseline-verification/
+│   ├── unity-baseline-verification/
+│   │   ├── VERSION
+│   │   ├── SKILL.md
+│   │   ├── agents/openai.yaml
+│   │   └── scripts/
+│   │       ├── invoke-unity-baseline-verification.ps1
+│   │       ├── verify-unity-baseline.ps1
+│   │       ├── lib/unity-baseline-orchestration.ps1
+│   │       ├── lib/unity-isolation-path-budget.ps1
+│   │       └── lib/git-metadata-integrity.ps1
+│   └── unity-editmode-verification/
 │       ├── VERSION
 │       ├── SKILL.md
 │       ├── agents/openai.yaml
 │       └── scripts/
-│           ├── invoke-unity-baseline-verification.ps1
-│           ├── verify-unity-baseline.ps1
-│           ├── lib/unity-baseline-orchestration.ps1
-│           ├── lib/unity-isolation-path-budget.ps1
-│           └── lib/git-metadata-integrity.ps1
+│           ├── invoke-unity-editmode-verification.ps1
+│           └── lib/unity-editmode-verification-core.ps1
 └── tests/
     ├── fixtures/...
     ├── run-tests.ps1
     ├── unity-baseline-verification/run-tests.ps1
-    └── unity-baseline-verification/orchestration/run-tests.ps1
+    ├── unity-baseline-verification/orchestration/run-tests.ps1
+    └── unity-editmode-verification/run-tests.ps1
 ~~~
 
 Skill 원본은 이 Git 저장소에 남는다. 설치기는 `skills/codex` 아래의 모든 Skill을 사용자 홈 `.agents/skills`에 이름별 symbolic link로 연결한다.
@@ -155,10 +178,12 @@ Windows에서 symbolic link 생성에는 개발자 모드 또는 관리자 권�
 ~~~powershell
 $doctorLink = Get-Item "$HOME\.agents\skills\unity-project-doctor" -Force
 $baselineLink = Get-Item "$HOME\.agents\skills\unity-baseline-verification" -Force
-$doctorLink, $baselineLink | Select-Object FullName, LinkType, Target
+$editModeLink = Get-Item "$HOME\.agents\skills\unity-editmode-verification" -Force
+$doctorLink, $baselineLink, $editModeLink | Select-Object FullName, LinkType, Target
 Test-Path "$HOME\.agents\skills\unity-project-doctor\scripts\inspect-unity-project.ps1"
 Test-Path "$HOME\.agents\skills\unity-baseline-verification\scripts\invoke-unity-baseline-verification.ps1"
 Test-Path "$HOME\.agents\skills\unity-baseline-verification\scripts\verify-unity-baseline.ps1"
+Test-Path "$HOME\.agents\skills\unity-editmode-verification\scripts\invoke-unity-editmode-verification.ps1"
 ~~~
 
 설치기는 기존 경로를 삭제하거나 덮어쓰지 않는다.
@@ -199,6 +224,14 @@ $unity-baseline-verification으로 현재 프로젝트를 검증해.
 ~~~
 
 Baseline 0.2.0은 Doctor JSON, scanner 경로, verifier 경로, artifact root 또는 일반적인 Hub 설치 위치의 Unity.exe 경로를 먼저 요구하지 않는다. bundled scanner의 원문 JSON을 프로젝트 밖에 저장하고 exact `6000.0.69f1` 후보를 자동으로 결정한 뒤 기존 verifier를 호출한다. 자동 탐색이 실패한 경우에만 blocker와 `-UnityExecutable` override 방법을 보고한다.
+
+EditMode 테스트 검증도 별도 Skill 이름을 명시한다.
+
+~~~text
+$unity-editmode-verification으로 현재 프로젝트의 EditMode 테스트를 검증해.
+~~~
+
+EditMode 0.1.0은 fresh Baseline을 내부에서 수행한 뒤 같은 격리본을 사용한다. 사용자가 오래된 Baseline JSON이나 격리 경로를 직접 넘기는 흐름은 지원하지 않는다.
 
 allow_implicit_invocation은 false다. Skill 이름이 없는 일반 Unity 질문이나 일반 코드 검토 요청으로 이 audit가 자동 실행되어서는 안 된다.
 
@@ -296,7 +329,13 @@ Baseline fake-Unity 및 격리 안전성 테스트:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-baseline-verification\run-tests.ps1
 ~~~
 
-두 테스트 모두 외부 테스트 framework나 Unity 설치 없이 Windows PowerShell 기본 기능만 사용한다.
+EditMode fake-process, NUnit 분류 및 handoff 안전성 테스트:
+
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\unity-editmode-verification\run-tests.ps1
+~~~
+
+세 테스트 모두 외부 테스트 framework나 Unity 설치 없이 Windows PowerShell 기본 기능만 사용한다.
 
 - NOT_A_UNITY_PROJECT
 - ProjectRoot 생략 시 current working directory 기본값
@@ -352,7 +391,7 @@ Get-ChildItem -Filter *.ps1 -File -Recurse | ForEach-Object {
 }
 ~~~
 
-GitHub Actions의 `static-tests.yml`은 Doctor fixture/schema/fingerprint를, `baseline-static-tests.yml`은 production unsigned-fake 차단과 내부 Job Object/log 회귀를 `windows-latest`에서 실행한다. 두 workflow 모두 Unity와 외부 package를 설치하지 않으며 테스트 뒤 `git diff`와 `git status`가 깨끗한지 확인한다.
+GitHub Actions의 `static-tests.yml`은 Doctor fixture/schema/fingerprint를, `baseline-static-tests.yml`은 production unsigned-fake 차단과 내부 Job Object/log 회귀를, `editmode-static-tests.yml`은 EditMode handoff/NUnit/process/integrity 회귀를 `windows-latest`에서 실행한다. 세 workflow 모두 Unity와 외부 package를 설치하지 않으며 테스트 뒤 `git diff`와 `git status`가 깨끗한지 확인한다.
 
 ## 수동 검증
 

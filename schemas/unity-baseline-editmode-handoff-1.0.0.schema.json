@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/dntlr2000/unity_agent_pipeline/main/schemas/unity-baseline-editmode-handoff-1.0.0.schema.json",
+  "title": "Unity Baseline to EditMode verification handoff",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "verifierVersion",
+    "projectRoot",
+    "expectedUnityVersion",
+    "doctor",
+    "unity",
+    "processControl",
+    "preflight",
+    "isolation",
+    "artifacts",
+    "originalProjectIntegrity",
+    "gitMetadataIntegrity",
+    "verification",
+    "blockers",
+    "finalStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.1.0" },
+    "verifierVersion": { "const": "0.1.3" },
+    "projectRoot": { "type": "string", "minLength": 1 },
+    "expectedUnityVersion": { "const": "6000.0.69f1" },
+    "doctor": {
+      "type": "object",
+      "required": [
+        "sourcePath",
+        "sha256",
+        "schemaVersion",
+        "scannerVersion",
+        "projectRoot",
+        "finalStatus",
+        "schemaValidated",
+        "fingerprintMatched",
+        "projectFingerprint",
+        "currentProjectFingerprint",
+        "accepted"
+      ],
+      "properties": {
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "schemaVersion": { "const": "1.1.0" },
+        "scannerVersion": { "const": "0.2.1" },
+        "projectRoot": { "type": "string", "minLength": 1 },
+        "finalStatus": {
+          "enum": ["STATIC_AUDIT_COMPLETE", "STATIC_AUDIT_COMPLETE_WITH_WARNINGS"]
+        },
+        "schemaValidated": { "const": true },
+        "fingerprintMatched": { "const": true },
+        "projectFingerprint": { "type": "object" },
+        "currentProjectFingerprint": { "type": "object" },
+        "accepted": { "const": true }
+      },
+      "additionalProperties": true
+    },
+    "unity": {
+      "type": "object",
+      "required": [
+        "executablePath",
+        "executableSha256",
+        "detectedExecutableVersion",
+        "executableVersionMatched",
+        "signatureStatus",
+        "signerSubject",
+        "certificateThumbprint",
+        "publisherMatched",
+        "processStarted",
+        "timedOut",
+        "exitCode"
+      ],
+      "properties": {
+        "executablePath": { "type": "string", "minLength": 1 },
+        "executableSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "detectedExecutableVersion": { "const": "6000.0.69f1" },
+        "executableVersionMatched": { "const": true },
+        "signatureStatus": { "const": "Valid" },
+        "signerSubject": { "type": "string", "minLength": 1 },
+        "certificateThumbprint": { "type": "string", "minLength": 1 },
+        "publisherMatched": { "const": true },
+        "processStarted": { "const": true },
+        "timedOut": { "const": false },
+        "exitCode": { "const": 0 }
+      },
+      "additionalProperties": true
+    },
+    "processControl": {
+      "type": "object",
+      "required": [
+        "jobObjectCreated",
+        "killOnJobCloseConfigured",
+        "processAssignedToJob",
+        "rootProcessExited",
+        "processTreeExitVerified",
+        "activeProcessCountAfterWait"
+      ],
+      "properties": {
+        "jobObjectCreated": { "const": true },
+        "killOnJobCloseConfigured": { "const": true },
+        "processAssignedToJob": { "const": true },
+        "rootProcessExited": { "const": true },
+        "processTreeExitVerified": { "const": true },
+        "activeProcessCountAfterWait": { "const": 0 }
+      },
+      "additionalProperties": true
+    },
+    "preflight": {
+      "type": "object",
+      "required": [
+        "sourceEditorCheckCompleted",
+        "sourceEditorDetected",
+        "sourceSnapshotStable",
+        "gitMetadataSnapshotAccepted",
+        "artifactRootOutsideProject",
+        "trustedPathsWithoutReparse"
+      ],
+      "properties": {
+        "sourceEditorCheckCompleted": { "const": true },
+        "sourceEditorDetected": { "const": false },
+        "sourceSnapshotStable": { "const": true },
+        "gitMetadataSnapshotAccepted": { "const": true },
+        "artifactRootOutsideProject": { "const": true },
+        "trustedPathsWithoutReparse": { "const": true }
+      },
+      "additionalProperties": true
+    },
+    "isolation": {
+      "type": "object",
+      "required": ["sessionRoot", "projectCopyPath", "copyStatus", "copyFingerprint", "originalProjectPassedToUnity"],
+      "properties": {
+        "sessionRoot": { "type": "string", "minLength": 1 },
+        "projectCopyPath": { "type": "string", "minLength": 1 },
+        "copyStatus": { "const": "COPIED" },
+        "copyFingerprint": { "type": "object" },
+        "originalProjectPassedToUnity": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["resultPath", "resultWritten"],
+      "properties": {
+        "resultPath": { "type": "string", "minLength": 1 },
+        "resultWritten": { "const": true }
+      },
+      "additionalProperties": true
+    },
+    "originalProjectIntegrity": {
+      "type": "object",
+      "required": ["status", "unchanged", "beforeTreeSha256", "afterTreeSha256"],
+      "properties": {
+        "status": { "const": "UNCHANGED" },
+        "unchanged": { "const": true },
+        "beforeTreeSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "afterTreeSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      },
+      "additionalProperties": true
+    },
+    "gitMetadataIntegrity": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "enum": ["NOT_PRESENT", "UNCHANGED", "AMBIENT_CODEX_CHECKPOINTS_ONLY"] }
+      },
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "required": ["scriptCompilation", "tests", "playerBuild", "playMode", "runtime"],
+      "properties": {
+        "scriptCompilation": {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "VERIFIED_SUCCESS" } },
+          "additionalProperties": true
+        },
+        "tests": {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "NOT_VERIFIED" } },
+          "additionalProperties": true
+        },
+        "playerBuild": {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "NOT_VERIFIED" } },
+          "additionalProperties": true
+        },
+        "playMode": {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "NOT_VERIFIED" } },
+          "additionalProperties": true
+        },
+        "runtime": {
+          "type": "object",
+          "required": ["status"],
+          "properties": { "status": { "const": "NOT_VERIFIED" } },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "blockers": { "type": "array", "maxItems": 0 },
+    "finalStatus": { "const": "BASELINE_VERIFIED" }
+  },
+  "additionalProperties": true
+}

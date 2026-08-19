@@ -1,0 +1,7 @@
+interface:
+  display_name: "Unity EditMode Verification"
+  short_description: "Verify confirmed EditMode tests in isolation"
+  default_prompt: "Use $unity-editmode-verification to run Doctor-confirmed EditMode test assemblies against a freshly verified Baseline isolation copy."
+
+policy:
+  allow_implicit_invocation: false

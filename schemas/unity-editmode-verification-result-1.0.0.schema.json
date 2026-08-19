@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/dntlr2000/unity_agent_pipeline/main/schemas/unity-editmode-verification-result-1.0.0.schema.json",
+  "title": "Unity EditMode Verification result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "verifierVersion",
+    "projectRoot",
+    "baseline",
+    "doctor",
+    "unity",
+    "preflight",
+    "processControl",
+    "isolation",
+    "artifacts",
+    "testSelection",
+    "nunit",
+    "editorLog",
+    "originalProjectIntegrity",
+    "gitMetadataIntegrity",
+    "verification",
+    "warnings",
+    "failures",
+    "blockers",
+    "finalStatus",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "verifierVersion": { "const": "0.1.0" },
+    "projectRoot": { "type": ["string", "null"] },
+    "baseline": { "type": "object" },
+    "doctor": { "type": "object" },
+    "unity": { "type": "object" },
+    "preflight": { "type": "object" },
+    "processControl": { "type": "object" },
+    "isolation": { "type": "object" },
+    "artifacts": { "type": "object" },
+    "testSelection": { "type": "object" },
+    "nunit": { "type": "object" },
+    "editorLog": { "type": "object" },
+    "originalProjectIntegrity": { "type": "object" },
+    "gitMetadataIntegrity": { "type": "object" },
+    "verification": {
+      "type": "object",
+      "required": ["scriptCompilation", "editModeTests", "playMode", "playerBuild", "runtime"],
+      "additionalProperties": false,
+      "properties": {
+        "scriptCompilation": {
+          "type": "object",
+          "required": ["status", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "enum": ["NOT_VERIFIED", "VERIFIED_SUCCESS"] },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "editModeTests": {
+          "type": "object",
+          "required": ["status", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "enum": ["NOT_VERIFIED", "VERIFIED_SUCCESS", "VERIFIED_FAILURE"] },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        "playMode": { "$ref": "#/$defs/notVerified" },
+        "playerBuild": { "$ref": "#/$defs/notVerified" },
+        "runtime": { "$ref": "#/$defs/notVerified" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "failures": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "blockers": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "finalStatus": {
+      "enum": [
+        "EDITMODE_VERIFIED",
+        "EDITMODE_FAILED",
+        "NO_CONFIRMED_TEST_ASSEMBLY",
+        "EDITMODE_BLOCKED",
+        "ORIGINAL_PROJECT_CHANGED"
+      ]
+    },
+    "evidence": { "type": "array" }
+  },
+  "$defs": {
+    "notVerified": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "const": "NOT_VERIFIED" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["code", "check", "path", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "check": { "type": "string", "minLength": 1 },
+        "path": { "type": ["string", "null"] },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
