@@ -4,8 +4,14 @@
 
 ## Unreleased
 
-저장소 `VERSION`은 봉인된 `0.4.0`을 유지하며 다음 component는 아직 미공개 상태다.
+현재 미공개 변경 사항 없음.
 
+## Unity Agent Pipeline 0.5.0 - 2026-08-23
+
+저장소 Release 버전은 `0.5.0`이며 component 버전은 다음과 같이 독립적으로 유지한다.
+
+- `unity-project-doctor`: `0.2.1`
+- `unity-baseline-verification`: `0.2.0`
 - `unity-editmode-verification`: `0.1.0`
 - `unity-test-scaffold`: `0.1.0`
 

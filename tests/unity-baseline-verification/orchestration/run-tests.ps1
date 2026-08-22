@@ -359,7 +359,7 @@ try {
     foreach ($requiredPath in @($script:OrchestratorPath, $script:OrchestrationLibraryPath, $script:IsolationPathBudgetLibraryPath, $script:VerifierPath, $script:ScannerPath)) {
         Assert-True -Condition (Test-Path -LiteralPath $requiredPath -PathType Leaf) -Message "Required orchestration file: $requiredPath"
     }
-    Assert-Equal -Expected "0.4.0" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()) -Message "Repository VERSION remains sealed"
+    Assert-Equal -Expected "0.5.0" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "VERSION")).Trim()) -Message "Repository VERSION remains sealed"
     Assert-Equal -Expected "0.2.0" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-baseline-verification\VERSION")).Trim()) -Message "Baseline component VERSION"
     Assert-Equal -Expected "0.2.1" -Actual ((Get-Content -Raw -LiteralPath (Join-Path $script:RepositoryRoot "skills\codex\unity-project-doctor\VERSION")).Trim()) -Message "Doctor component VERSION remains unchanged"
 

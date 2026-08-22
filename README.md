@@ -7,12 +7,14 @@
 
 Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시적 호출 전용 Codex Skill 모음이다. Skill 원본, 공용 설치기, 계약, 테스트 및 CI는 이 모노레포에 유지한다.
 
+현재 저장소 Release는 [`v0.5.0`](docs/releases/v0.5.0.md)이며, 각 Skill의 component 버전은 독립적으로 유지한다.
+
 | Skill | 버전 | 역할 |
 | --- | --- | --- |
 | `$unity-project-doctor` | 0.2.1 | Unity를 실행하지 않는 읽기 전용 정적 감사와 Baseline copy-set fingerprint 생성 |
 | `$unity-baseline-verification` | 0.2.0 | bundled Doctor와 exact Unity.exe를 자동 준비한 뒤 승인된 저수준 verifier로 격리 컴파일 근거와 원본 무결성을 판정 |
-| `$unity-editmode-verification` | 0.1.0 (Unreleased) | fresh Baseline 격리본과 confirmed test assembly만 사용해 EditMode NUnit 결과와 원본 무결성을 판정 |
-| `$unity-test-scaffold` | 0.1.0 (Unreleased) | Runtime/EditMode asmdef 초기 구성을 먼저 PLAN하고 정확한 hash 확인 뒤에만 새 파일로 적용 |
+| `$unity-editmode-verification` | 0.1.0 | fresh Baseline 격리본과 confirmed test assembly만 사용해 EditMode NUnit 결과와 원본 무결성을 판정 |
+| `$unity-test-scaffold` | 0.1.0 | Runtime/EditMode asmdef 초기 구성을 먼저 PLAN하고 정확한 hash 확인 뒤에만 새 파일로 적용 |
 
 네 Skill 모두 `allow_implicit_invocation=false`이며 이름을 명시하지 않은 요청에서는 실행되지 않는다. 동적 안전 계약은 [Baseline](docs/skills/unity-baseline-verification.md), [EditMode](docs/skills/unity-editmode-verification.md)에, 초기 구성의 mutation 계약은 [Test Scaffold](docs/skills/unity-test-scaffold.md)에 분리되어 있다.
 
@@ -25,7 +27,7 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 - 기존 `verify-unity-baseline.ps1` 0.1.3이 Unity를 시작할 수 있는 유일한 컴포넌트이며 결과 `schemaVersion: 1.1.0`과 네 final status를 그대로 유지한다.
 - 실제 signed-Unity one-command 실행은 2026-08-17에 [APPROVED — SCRIPT COMPILATION ONLY](docs/validation/v0.2.0-baseline-orchestration-acceptance.md)로 승인됐다. Tests, Player Build, PlayMode 및 runtime은 승인 범위가 아니다.
 
-## EditMode Verification 0.1.0 (Unreleased)
+## EditMode Verification 0.1.0
 
 - 사용자는 Unity 프로젝트 루트에서 `$unity-editmode-verification으로 현재 프로젝트의 EditMode 테스트를 검증해.`라고 명시적으로 호출한다.
 - production entrypoint는 sibling Baseline one-command를 매 실행마다 새로 호출하고, 좁은 handoff schema로 `BASELINE_VERIFIED`, Doctor 0.2.1/schema 1.1.0, 원본 project root 및 fingerprint를 다시 검증한다.
@@ -35,7 +37,7 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 - 하나 이상의 passed test와 0 failed/error/inconclusive일 때만 `EDITMODE_VERIFIED`다. skipped test는 warning으로 보존한다. confirmed assembly가 없거나 선택 DLL이 생성되지 않았으면 Unity를 두 번째로 실행하지 않으며, 유효한 XML의 0 tests는 `NO_DISCOVERED_TEST_CASES`로 차단한다.
 - commit `56001b16e67a8f9543d2bf8eca90706d1faa3511`은 네 Windows workflow 통과 후 실제 signed Unity `6000.0.69f1`에서 selected DLL과 의미 있는 EditMode 테스트 4개를 검증해 [APPROVED — SCRIPT COMPILATION + SELECTED EDITMODE TESTS ONLY](docs/validation/v0.1.0-editmode-real-unity-acceptance.md)로 기록됐다. PlayMode, Player Build 및 runtime은 항상 `NOT_VERIFIED`다.
 
-## Test Scaffold 0.1.0 (Unreleased)
+## Test Scaffold 0.1.0
 
 - 사용자는 `$unity-test-scaffold로 현재 프로젝트의 EditMode 테스트 초기 구성을 계획해.`라고 명시적으로 호출한다.
 - 기본 실행은 읽기 전용 PLAN이며 Runtime/Test root, assembly name, 새 directory, 전체 file content와 SHA-256을 JSON으로 출력한다.
@@ -104,6 +106,7 @@ unity_agent_pipeline/
 │   ├── skills/unity-test-scaffold.md
 │   ├── releases/v0.3.0.md
 │   ├── releases/v0.4.0.md
+│   ├── releases/v0.5.0.md
 │   ├── validation/v0.1.1-unity-baseline-real-unity-acceptance.md
 │   ├── validation/v0.1.2-original-integrity-acceptance.md
 │   ├── validation/v0.1.2-real-unity-acceptance-result.md
