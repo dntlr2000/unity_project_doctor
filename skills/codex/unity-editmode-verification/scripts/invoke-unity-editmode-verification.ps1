@@ -92,6 +92,7 @@ function New-UevResult {
             finalStatus = $null
             accepted = $false
             validationErrors = @()
+            diagnostics = $null
         }
         doctor = [ordered]@{
             sourcePath = $null
@@ -130,6 +131,8 @@ function New-UevResult {
             doctorEvidenceAccepted = $false
             originalFingerprintMatched = $false
             isolatedFingerprintMatched = $false
+            isolatedSourceProjectionMatched = $false
+            selectedAssemblyBinariesPresent = $false
             unityTrustRevalidated = $false
             sourceEditorCheckCompleted = $false
             sourceEditorDetected = $null
@@ -154,6 +157,8 @@ function New-UevResult {
             projectCopyPath = $null
             baselineCopyFingerprint = $null
             currentCopyFingerprint = $null
+            fingerprintBindingClassification = 'NOT_EVALUATED'
+            fingerprintDelta = $null
             reusedBaselineCopy = $false
         }
         artifacts = [ordered]@{
@@ -175,6 +180,13 @@ function New-UevResult {
             assemblyNames = @()
             assemblyNamesArgument = $null
             candidateOnlyExcludedCount = 0
+            binaryPreflight = [ordered]@{
+                completed = $false
+                accepted = $false
+                scriptAssembliesRoot = $null
+                records = @()
+                missingAssemblyNames = @()
+            }
         }
         nunit = [ordered]@{
             exists = $false
@@ -448,6 +460,7 @@ function Test-UevBaselineHandoff {
     $script:Result.baseline.schemaVersion = [string](Get-UevJsonProperty $baseline 'schemaVersion')
     $script:Result.baseline.verifierVersion = [string](Get-UevJsonProperty $baseline 'verifierVersion')
     $script:Result.baseline.finalStatus = [string](Get-UevJsonProperty $baseline 'finalStatus')
+    $script:Result.baseline.diagnostics = Get-UevBaselineDiagnosticSummary -Baseline $baseline
     try {
         $schemaErrors = @(Invoke-JsonSchemaValidation -Instance $baseline -SchemaPath $script:BaselineHandoffSchemaPath)
         $semanticErrors = New-Object System.Collections.ArrayList
@@ -463,7 +476,12 @@ function Test-UevBaselineHandoff {
         }
         $script:Result.baseline.validationErrors = @($semanticErrors)
         if ($semanticErrors.Count -gt 0) {
-            Add-UevBlocker -Code 'BASELINE_HANDOFF_REJECTED' -Check 'baseline' -Path $script:Result.artifacts.baselineResultPath -Message ([string]::Join(' ', [string[]]@($semanticErrors)))
+            $message = [string]::Join(' ', [string[]]@($semanticErrors))
+            $primaryCause = Get-UevJsonProperty -InputObject $script:Result.baseline.diagnostics -Name 'primaryCause'
+            if ($null -ne $primaryCause) {
+                $message += " Primary cause: $([string](Get-UevJsonProperty $primaryCause 'code')) - $([string](Get-UevJsonProperty $primaryCause 'message'))"
+            }
+            Add-UevBlocker -Code 'BASELINE_HANDOFF_REJECTED' -Check 'baseline' -Path $script:Result.artifacts.baselineResultPath -Message $message
             return
         }
         $script:Result.baseline.accepted = $true
@@ -557,7 +575,7 @@ function Test-UevDoctorEvidence {
     }
 }
 
-# Recomputes source and isolated fingerprints before the EditMode Unity process starts.
+# Recomputes exact source evidence and the narrow reusable-isolation source projection before EditMode starts.
 function Test-UevFingerprintBindings {
     if (-not $script:Result.doctor.accepted) {
         return
@@ -593,17 +611,77 @@ function Test-UevFingerprintBindings {
         }
         $baselineCopy = Get-UevJsonProperty $baselineIsolation 'copyFingerprint'
         $baselineCopyTree = [string](Get-UevJsonProperty $baselineCopy 'treeSha256')
+        if ($baselineCopyTree -ne $doctorTree) {
+            throw 'Doctor and Baseline receipts disagree about the accepted pre-Unity isolation fingerprint.'
+        }
         $currentCopy = Get-StableUnityCopySetFingerprint -ProjectRoot $copyPath
         $script:Result.isolation.baselineCopyFingerprint = $baselineCopyTree
         $script:Result.isolation.currentCopyFingerprint = $currentCopy.treeSha256
-        if ($currentCopy.treeSha256 -ne $doctorTree -or $currentCopy.treeSha256 -ne $baselineCopyTree) {
-            throw 'The reusable Baseline isolation copy no longer matches its accepted source fingerprint.'
+        $assessment = Get-UevIsolationFingerprintAssessment `
+            -SourceSnapshot $currentSource.snapshot `
+            -IsolationSnapshot $currentCopy.snapshot
+        $script:Result.isolation.fingerprintBindingClassification = $assessment.classification
+        $script:Result.isolation.fingerprintDelta = $assessment
+        $script:Result.preflight.isolatedFingerprintMatched = [bool]$assessment.exactMatch
+        $script:Result.preflight.isolatedSourceProjectionMatched = [bool]$assessment.accepted
+        if (-not $assessment.accepted) {
+            throw "The reusable Baseline isolation copy contains a disallowed post-Unity delta: $($assessment.disallowedDeltaCount) file or directory change(s)."
         }
-        $script:Result.preflight.isolatedFingerprintMatched = $true
         $script:Result.isolation.reusedBaselineCopy = $true
-        Add-UevEvidence -Check 'fingerprintBinding' -Status 'PASSED' -Source $copyPath -Detail 'Current source, Doctor receipt, Baseline receipt, and reusable isolated copy have the same copy-set SHA-256.'
+        if ($assessment.exactMatch) {
+            Add-UevEvidence -Check 'fingerprintBinding' -Status 'PASSED' -Source $copyPath -Detail 'Current source, Doctor receipt, Baseline receipt, and reusable isolated copy have the same copy-set SHA-256.'
+        } else {
+            $allowedPaths = @(
+                @($assessment.allowedAddedFiles) +
+                @($assessment.allowedRemovedFiles) +
+                @($assessment.allowedChangedFiles) |
+                    ForEach-Object { [string]$_.path } |
+                    Sort-Object -Unique
+            )
+            Add-UevEvidence `
+                -Check 'fingerprintBinding' `
+                -Status 'PASSED' `
+                -Source $copyPath `
+                -Detail "Current source still matches Doctor and Baseline receipts; only project-root IDE files regenerated by Baseline Unity differ in the reusable isolation: $([string]::Join(', ', [string[]]$allowedPaths))."
+        }
     } catch {
         Add-UevBlocker -Code 'FINGERPRINT_BINDING_FAILED' -Check 'preflight' -Path $script:Result.isolation.projectCopyPath -Message $_.Exception.Message
+    }
+}
+
+# Requires every Doctor-selected test assembly DLL to exist in the accepted Baseline isolation.
+function Test-UevSelectedAssemblyBinaries {
+    if (-not $script:Result.isolation.reusedBaselineCopy) {
+        return
+    }
+    try {
+        $assessment = Get-UevSelectedAssemblyBinaryAssessment `
+            -ProjectCopyPath $script:Result.isolation.projectCopyPath `
+            -AssemblyNames ([string[]]@($script:Result.testSelection.assemblyNames))
+        foreach ($propertyName in @('completed', 'accepted', 'scriptAssembliesRoot', 'records', 'missingAssemblyNames')) {
+            $script:Result.testSelection.binaryPreflight[$propertyName] = Get-UevJsonProperty -InputObject $assessment -Name $propertyName
+        }
+        if (-not $assessment.accepted) {
+            $missing = [string]::Join(', ', [string[]]@($assessment.missingAssemblyNames))
+            Add-UevBlocker `
+                -Code 'TEST_ASSEMBLY_NOT_BUILT' `
+                -Check 'testAssemblyBinary' `
+                -Path $assessment.scriptAssembliesRoot `
+                -Message "Baseline completed, but selected test assembly DLL(s) were not built: $missing. Likely causes include asmdef/.meta import failure, platform or define constraints, or an assembly compilation failure."
+            return
+        }
+        $script:Result.preflight.selectedAssemblyBinariesPresent = $true
+        Add-UevEvidence `
+            -Check 'testAssemblyBinary' `
+            -Status 'PASSED' `
+            -Source $assessment.scriptAssembliesRoot `
+            -Detail "Every selected test assembly produced a non-empty DLL in the accepted Baseline isolation: $([string]::Join(', ', [string[]]@($script:Result.testSelection.assemblyNames)))."
+    } catch {
+        Add-UevBlocker `
+            -Code 'TEST_ASSEMBLY_BINARY_PREFLIGHT_UNAVAILABLE' `
+            -Check 'testAssemblyBinary' `
+            -Path $script:Result.isolation.projectCopyPath `
+            -Message $_.Exception.Message
     }
 }
 
@@ -817,8 +895,9 @@ function Set-UevDynamicVerification {
         Add-UevBlocker -Code 'EDITOR_LOG_INCONCLUSIVE' -Check 'editModeTests' -Path $script:Result.artifacts.editorLogPath -Message "Editor.log classification is $($editorLog.classification)."
         return
     }
-    if (@('PASSED', 'PASSED_WITH_SKIPS') -notcontains $nunit.classification) {
-        Add-UevBlocker -Code 'NUNIT_EVIDENCE_INCONCLUSIVE' -Check 'editModeTests' -Path $script:Result.artifacts.testResultsPath -Message "NUnit XML classification is $($nunit.classification): $($nunit.error)"
+    $nunitDecision = Get-UevNUnitEvidenceDecision -NUnitAnalysis $nunit
+    if (-not $nunitDecision.accepted) {
+        Add-UevBlocker -Code $nunitDecision.blockerCode -Check 'editModeTests' -Path $script:Result.artifacts.testResultsPath -Message $nunitDecision.message
         return
     }
     if ($nunit.passed -le 0 -or $nunit.failed -ne 0 -or $nunit.errors -ne 0 -or $nunit.inconclusive -ne 0) {
@@ -967,6 +1046,7 @@ try {
         Test-UevDoctorEvidence
         if ($script:Result.doctor.accepted -and -not $script:NoConfirmedAssembly) {
             Test-UevFingerprintBindings
+            Test-UevSelectedAssemblyBinaries
             Test-UevUnityTrust
             Test-UevSourceEditorPreflight
             if ($script:Blockers.Count -eq 0) {

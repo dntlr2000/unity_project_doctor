@@ -4,7 +4,7 @@ Unity EditMode Verification is an explicit-only pipeline component for selected 
 
 ## Current approval state
 
-The component and deterministic fake/process/XML regressions are implemented under `Unreleased`. A signed Unity `6000.0.69f1` acceptance run has not been performed for this component, so this document does not claim real-Unity EditMode approval.
+The component remains `Unreleased`. A 2026-08-22 precursor run on signed Unity `6000.0.69f1` executed four meaningful tests and recorded 4 passed, 0 failed, and unchanged original/Git state. Production hardening was added afterward, so that run is historical evidence only and is not final acceptance for the current revision. The exact post-hardening implementation still requires a new acceptance run after its implementation commit and Windows CI pass.
 
 ## One-command flow
 
@@ -14,7 +14,8 @@ exact source root
 → Baseline schema 1.1.0 / verifier 0.1.3 handoff validation
 → referenced Doctor 1.1.0 / scanner 0.2.1 validation
 → Doctor-confirmed test assembly selection
-→ source and reusable isolation fingerprint recheck
+→ exact source/receipt fingerprint and reusable isolation source-projection recheck
+→ selected assembly DLL proof in Baseline Library/ScriptAssemblies
 → Unity.exe version, SHA-256 and Authenticode recheck
 → source-editor fail-closed preflight
 → same Baseline isolation copy + Unity Test Framework EditMode
@@ -22,7 +23,9 @@ exact source root
 → source and Git metadata post-check
 ~~~
 
-The Baseline receipt is preserved byte-for-byte under the EditMode artifact session and hashed before interpretation. Candidate-only asmdef records are reported but never passed to Unity.
+The Baseline receipt is preserved byte-for-byte under the EditMode artifact session and hashed before interpretation. Its concrete compiler errors, failure markers, blockers, failures, and process-cleanup state are also summarized under `baseline.diagnostics` before narrow handoff validation, so a rejected Baseline does not collapse into a generic error. Candidate-only asmdef records are reported but never passed to Unity.
+
+Baseline Unity may regenerate project-root solution metadata after the pre-Unity isolation fingerprint was captured. EditMode therefore preserves both raw hashes and accepts a post-Unity isolation mismatch only when the complete delta consists of root `*.sln`, `*.csproj`, or `*.csproj.user` files. It records added, removed, and changed paths with hashes under `isolation.fingerprintDelta`. Any directory delta, nested IDE-like path, `Assets`, `Packages`, `ProjectSettings`, or other file delta remains `FINGERPRINT_BINDING_FAILED`.
 
 ## Invocation
 
@@ -45,9 +48,11 @@ The default artifact root is `%TEMP%\uev`. A GUID session keeps concurrent invoc
 
 ## Test selection
 
-Only `assemblies.confirmedTestAssemblies` from the exact Doctor artifact referenced by Baseline are eligible. Each name must be unique and match the closed assembly-name grammar before all names are sorted and joined as one semicolon-delimited `-assemblyNames` value.
+Only `assemblies.confirmedTestAssemblies` from the exact Doctor artifact referenced by Baseline are eligible. Doctor confirmation proves a direct test-asmdef declaration such as `optionalUnityReferences: ["TestAssemblies"]`; it does not prove that Unity imported or compiled the assembly. Each name must be unique and match the closed assembly-name grammar before all names are sorted and joined as one semicolon-delimited `-assemblyNames` value.
 
 `candidateOnlyTestAssemblies` are not executable evidence. When the confirmed set is empty, the workflow stops without a second Unity process and returns `NO_CONFIRMED_TEST_ASSEMBLY`.
+
+After Baseline and fingerprint acceptance, the preflight requires a non-empty `Library/ScriptAssemblies/<assembly-name>.dll` for every selected name. It records the absolute DLL path, byte length, and SHA-256. A missing DLL returns blocker `TEST_ASSEMBLY_NOT_BUILT` without starting a second Unity process; likely causes include asmdef or `.meta` import failure, platform/define constraints, or compilation failure.
 
 ## Fixed Unity arguments
 
@@ -75,7 +80,9 @@ NUnit XML is the direct test evidence. Editor.log, exact exit code, and Job Obje
 
 - accepted fresh Baseline and Doctor receipts;
 - exact Unity `6000.0.69f1` bytes and signer unchanged since Baseline;
-- current source and isolation copy-set fingerprints matching Doctor;
+- current source, Doctor, and Baseline pre-Unity fingerprints matching exactly;
+- reusable isolation classified as `EXACT_MATCH` or `ROOT_IDE_GENERATED_FILES_ONLY`, with raw equality reported separately and every allowed delta recorded;
+- every selected assembly represented by a non-empty DLL in the accepted Baseline isolation, with path, byte length, and SHA-256 preserved;
 - at least one passed test;
 - zero failed, error, and inconclusive tests;
 - optional skipped tests recorded as warnings;
@@ -83,7 +90,9 @@ NUnit XML is the direct test evidence. Editor.log, exact exit code, and Job Obje
 - zero active processes after bounded Job Object wait;
 - unchanged original copy-set and accepted Git metadata state.
 
-Failure details are sorted and capped at 100 records with a truncation flag. Missing, malformed, inconsistent, or zero-test XML is blocking rather than successful.
+Failure details are sorted and capped at 100 records with a truncation flag. Missing, malformed, or inconsistent XML remains `NUNIT_EVIDENCE_INCONCLUSIVE`. A valid NUnit document with zero discovered tests is distinguished as `NO_DISCOVERED_TEST_CASES`; neither result is successful.
+
+Editor.log classification includes precise markers for malformed `.meta` YAML, invalid `.meta` GUIDs, and failed asmdef import. Unrelated licensing text is not treated as those failures. These diagnostics supplement, but never replace, the selected DLL and NUnit evidence gates.
 
 ## Deliberately unverified scope
 

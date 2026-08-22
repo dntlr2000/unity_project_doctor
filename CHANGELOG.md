@@ -7,6 +7,7 @@
 저장소 `VERSION`은 봉인된 `0.4.0`을 유지하며 다음 component는 아직 미공개 상태다.
 
 - `unity-editmode-verification`: `0.1.0`
+- `unity-test-scaffold`: `0.1.0`
 
 ### Added
 
@@ -17,6 +18,20 @@
 - NUnit 2/3 XML, Editor.log, exit code, Job Object process-tree 및 원본/Git 무결성을 결합한 결과 schema `1.0.0`
 - `EDITMODE_VERIFIED`, `EDITMODE_FAILED`, `NO_CONFIRMED_TEST_ASSEMBLY`, `EDITMODE_BLOCKED`, `ORIGINAL_PROJECT_CHANGED` 상태
 - 외부 프레임워크 없는 unsigned fake-process/XML 회귀와 별도 Windows CI
+- 명시적 호출 전용 `$unity-test-scaffold` Skill과 `allow_implicit_invocation=false` 정책
+- unique Runtime source inference와 explicit root override를 지원하는 결정론적 read-only PLAN
+- Runtime/EditMode asmdef, 필요한 directory 및 `.meta`의 전체 content/SHA-256 계획과 결과 schema `1.0.0`
+- exact `planSha256` 확인 후에만 create-new write를 허용하는 APPLY와 postcondition delta 검증
+- partial write rollback, Doctor confirmed-test evidence 호환 fixture 및 별도 Windows CI
+
+### Fixed
+
+- EditMode preflight가 Baseline Unity가 격리본 루트에 재생성한 `.sln`/`.csproj`를 원본 소스 변조로 오판하던 문제를 수정
+- 원본·Doctor·Baseline pre-Unity fingerprint는 계속 exact match를 요구하고, post-Unity 격리본은 루트 `.sln`, `.csproj`, `.csproj.user` delta만 구조화해 허용하며 그 밖의 변화는 fail-closed로 차단
+- Test Scaffold가 생성한 `.meta`가 terminal newline 없이 끝나 Unity에서 importer metadata로 인식되지 않을 수 있던 문제를 수정하고 UTF-8 without BOM, LF-only, 정확히 하나의 terminal LF를 회귀로 고정
+- Doctor의 test asmdef 선언 근거와 Unity가 실제로 생성한 test assembly DLL을 구분하고, 선택 DLL이 Baseline `Library/ScriptAssemblies`에 없으면 두 번째 Unity 실행 전에 `TEST_ASSEMBLY_NOT_BUILT`로 차단
+- Baseline handoff 실패 시 compiler error, failure marker, blocker/failure와 process cleanup을 `baseline.diagnostics`에 보존
+- valid NUnit XML의 0 tests를 `NO_DISCOVERED_TEST_CASES`로 분리하고 malformed `.meta`, invalid GUID, asmdef import 실패에 대한 정밀 Editor.log marker를 추가
 
 ### Security
 
@@ -24,12 +39,17 @@
 - candidate-only assembly, `-runSynchronously`, `-quit`, `-executeMethod`, API update, Player Build, PlayMode 및 runtime 실행을 금지
 - Baseline/Doctor/fingerprint/Authenticode/source-editor/XML/process/integrity 증거가 불완전하면 성공으로 승격하지 않음
 - production signature 또는 safety bypass와 외부 package/module 설치를 추가하지 않음
+- Test Scaffold는 기존 file을 덮어쓰지 않고 project 밖 또는 reparse path에 쓰지 않으며 manifest/package/test method를 자동 생성하지 않음
+- Runtime asmdef가 assembly boundary를 바꿀 수 있다는 경고를 보존하고 plan hash가 현재 copy-set과 전체 planned content를 결속
+- APPLY 실패 시 현재 transaction이 만든 exact entry만 rollback하며 복원이나 exact delta를 증명하지 못하면 성공으로 승격하지 않음
 
 ### Validation
 
-- Doctor와 Baseline 기존 회귀, 새 EditMode core/fake-process/XML/source-editor/installer 회귀 및 PowerShell parse 검사를 수행
-- 실제 Unity 또는 Unity Hub를 실행하지 않았으며 signed-Unity EditMode 승인을 주장하지 않음
-- 별도 실제 Unity acceptance gate는 `NOT RUN — PROCEDURE ONLY` 상태로 유지
+- Doctor와 Baseline 기존 회귀, 새 EditMode core/fake-process/XML/source-editor/installer 회귀 및 PowerShell parse 검사를 `TEMP`/`TMP=E:\CodexTemp`에서 수행
+- Test Scaffold의 PLAN determinism, missing/wrong hash, exact APPLY delta, rollback, ambiguity, collision, path escape, Doctor handoff, installer 및 schema 회귀를 수행
+- 이번 hardening 및 Test Scaffold 회귀에서는 실제 Unity/Unity Hub를 실행하지 않았고 compilation 또는 EditMode 승인 성공을 주장하지 않음
+- 2026-08-22 pre-hardening 실제 Unity 실행에서 의미 있는 EditMode test 4개가 모두 통과했지만, 이후 production hardening이 추가됐으므로 현 revision의 최종 acceptance로 승격하지 않음
+- post-hardening signed-Unity acceptance gate는 계속 `NOT RUN — PROCEDURE ONLY`
 
 ## Unity Agent Pipeline 0.4.0 - 2026-08-17
 

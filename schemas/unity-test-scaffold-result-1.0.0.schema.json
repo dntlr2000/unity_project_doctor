@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/dntlr2000/unity_agent_pipeline/main/schemas/unity-test-scaffold-result-1.0.0.schema.json",
+  "title": "Unity Test Scaffold result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "scaffoldVersion",
+    "projectRoot",
+    "mode",
+    "projectDetection",
+    "testFramework",
+    "runtime",
+    "tests",
+    "preconditionFingerprint",
+    "plan",
+    "apply",
+    "verification",
+    "warnings",
+    "blockers",
+    "finalStatus",
+    "evidence"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "scaffoldVersion": { "const": "0.1.0" },
+    "projectRoot": { "type": ["string", "null"] },
+    "mode": { "enum": ["PLAN", "APPLY"] },
+    "projectDetection": {
+      "type": "object",
+      "required": ["isUnityProject", "assetsDirectoryExists", "manifestExists", "projectVersionExists"],
+      "additionalProperties": false,
+      "properties": {
+        "isUnityProject": { "type": "boolean" },
+        "assetsDirectoryExists": { "type": "boolean" },
+        "manifestExists": { "type": "boolean" },
+        "projectVersionExists": { "type": "boolean" }
+      }
+    },
+    "testFramework": {
+      "type": "object",
+      "required": ["manifestParseStatus", "directDependencyPresent", "declaredVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "manifestParseStatus": { "enum": ["NOT_CHECKED", "PARSED", "MALFORMED"] },
+        "directDependencyPresent": { "type": "boolean" },
+        "declaredVersion": { "type": ["string", "null"] }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["resolution", "candidates", "sourceRoot", "assemblyName", "asmdefPath", "asmdefSource"],
+      "additionalProperties": false,
+      "properties": {
+        "resolution": { "enum": ["NOT_RESOLVED", "EXPLICIT", "INFERRED_UNIQUE_RUNTIME_DIRECTORY"] },
+        "candidates": { "type": "array", "items": { "type": "string" } },
+        "sourceRoot": { "type": ["string", "null"] },
+        "assemblyName": { "type": ["string", "null"] },
+        "asmdefPath": { "type": ["string", "null"] },
+        "asmdefSource": { "enum": ["NONE", "EXISTING", "PLANNED"] }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["root", "assemblyName", "asmdefPath", "asmdefSource", "testFileCreated"],
+      "additionalProperties": false,
+      "properties": {
+        "root": { "type": ["string", "null"] },
+        "assemblyName": { "type": ["string", "null"] },
+        "asmdefPath": { "type": ["string", "null"] },
+        "asmdefSource": { "enum": ["NONE", "EXISTING", "PLANNED"] },
+        "testFileCreated": { "const": false }
+      }
+    },
+    "preconditionFingerprint": { "$ref": "#/$defs/fingerprint" },
+    "plan": {
+      "type": "object",
+      "required": ["status", "contractVersion", "planSha256", "requiresConfirmation", "directories", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["NOT_READY", "READY", "ALREADY_CONFIGURED"] },
+        "contractVersion": { "const": "1.0.0" },
+        "planSha256": { "type": ["string", "null"] },
+        "requiresConfirmation": { "type": "boolean" },
+        "directories": { "type": "array", "items": { "type": "string" } },
+        "files": { "type": "array", "items": { "$ref": "#/$defs/plannedFile" } }
+      }
+    },
+    "apply": {
+      "type": "object",
+      "required": [
+        "requested",
+        "expectedPlanSha256",
+        "confirmationMatched",
+        "attempted",
+        "succeeded",
+        "createdDirectories",
+        "createdFiles",
+        "postconditionVerified",
+        "postconditionFingerprint",
+        "delta",
+        "rollback"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "requested": { "type": "boolean" },
+        "expectedPlanSha256": { "type": ["string", "null"] },
+        "confirmationMatched": { "type": "boolean" },
+        "attempted": { "type": "boolean" },
+        "succeeded": { "type": "boolean" },
+        "createdDirectories": { "type": "array", "items": { "type": "string" } },
+        "createdFiles": { "type": "array", "items": { "type": "string" } },
+        "postconditionVerified": { "type": "boolean" },
+        "postconditionFingerprint": { "type": ["object", "null"] },
+        "delta": { "type": ["object", "null"] },
+        "rollback": { "$ref": "#/$defs/rollback" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["scriptCompilation", "editModeTests", "playMode", "playerBuild", "runtime"],
+      "additionalProperties": false,
+      "properties": {
+        "scriptCompilation": { "$ref": "#/$defs/notVerified" },
+        "editModeTests": { "$ref": "#/$defs/notVerified" },
+        "playMode": { "$ref": "#/$defs/notVerified" },
+        "playerBuild": { "$ref": "#/$defs/notVerified" },
+        "runtime": { "$ref": "#/$defs/notVerified" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "blockers": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+    "finalStatus": {
+      "enum": [
+        "SCAFFOLD_PLAN_READY",
+        "SCAFFOLD_APPLIED",
+        "SCAFFOLD_ALREADY_CONFIGURED",
+        "SCAFFOLD_BLOCKED",
+        "PROJECT_CHANGED_DURING_APPLY"
+      ]
+    },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } }
+  },
+  "$defs": {
+    "fingerprint": {
+      "type": "object",
+      "required": ["status", "algorithm", "directoryCount", "fileCount", "treeSha256"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["NOT_COMPUTED", "COMPUTED"] },
+        "algorithm": { "const": "SHA-256" },
+        "directoryCount": { "type": "integer" },
+        "fileCount": { "type": "integer" },
+        "treeSha256": { "type": ["string", "null"] }
+      }
+    },
+    "plannedFile": {
+      "type": "object",
+      "required": ["path", "kind", "sha256", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["RUNTIME_ASMDEF", "EDITMODE_TEST_ASMDEF", "FOLDER_META", "ASMDEF_META"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "content": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "required": ["attempted", "completed", "removedFiles", "removedDirectories", "errors"],
+      "additionalProperties": false,
+      "properties": {
+        "attempted": { "type": "boolean" },
+        "completed": { "type": "boolean" },
+        "removedFiles": { "type": "array", "items": { "type": "string" } },
+        "removedDirectories": { "type": "array", "items": { "type": "string" } },
+        "errors": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "notVerified": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "const": "NOT_VERIFIED" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["code", "check", "path", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "check": { "type": "string", "minLength": 1 },
+        "path": { "type": ["string", "null"] },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["check", "status", "path", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "check": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "path": { "type": ["string", "null"] },
+        "message": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Unity Test Scaffold"
+  short_description: "Plan and safely add Unity test asmdefs"
+  default_prompt: "Use $unity-test-scaffold to plan the minimal Runtime and EditMode test assembly configuration, then wait for explicit hash-bound approval before applying it."
+
+policy:
+  allow_implicit_invocation: false

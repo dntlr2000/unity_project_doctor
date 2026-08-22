@@ -31,8 +31,11 @@ Apply `ExecutionPolicy Bypass` only to this child process. Do not change user or
 - Treat the original project as fully read-only. Never pass it to Unity or create a file, log, cache, report, package, test, or setting in it.
 - Do not start Unity Hub, install or update Unity, install a package or module, run a Player Build, enter PlayMode, start a player, or perform runtime automation.
 - Do not add, generate, repair, migrate, or modify tests. Run only assembly names backed by Doctor `confirmedTestAssemblies` evidence.
+- Treat Doctor confirmation only as direct asmdef declaration evidence. It does not prove that Unity imported the asmdef or built its DLL.
 - Never run candidate-only test assemblies. A test-like path or name is not direct test evidence.
 - Reuse the exact Baseline isolation copy. Do not copy the project again or mutate the original to prepare tests.
+- Require the current source, Doctor receipt, and Baseline pre-Unity copy fingerprint to remain exact. In the reusable post-Unity isolation, accept only a structured delta limited to project-root `*.sln`, `*.csproj`, and `*.csproj.user` IDE files; any directory, nested IDE-like file, or other file delta remains blocking.
+- Before the EditMode Unity process starts, require a non-empty `Library/ScriptAssemblies/<assembly-name>.dll` for every selected assembly in the accepted Baseline isolation. Missing or unreadable DLL evidence is blocking, not an empty test run.
 - Keep all EditMode XML, logs, streams, and JSON under the external artifact session reported by the script.
 - Never add a signature bypass, test mode, safety-disable environment variable, or alternate executable launcher.
 - Preserve `playMode`, `playerBuild`, and `runtime` as `NOT_VERIFIED`.
@@ -41,10 +44,13 @@ Apply `ExecutionPolicy Bypass` only to this child process. Do not change user or
 
 - Require exactly one JSON document on stdout. Diagnostics belong to stderr.
 - Require result `schemaVersion: 1.0.0` and `verifierVersion: 0.1.0` before interpreting fields.
-- Preserve Baseline and Doctor warnings, selected assembly evidence, NUnit counts, logs, blockers, failures, integrity evidence, and `finalStatus` without promotion or deletion.
+- Preserve Baseline and Doctor warnings, Baseline failure/process-cleanup diagnostics, selected assembly declaration and DLL evidence, NUnit counts, logs, blockers, failures, integrity evidence, and `finalStatus` without promotion or deletion.
 - Do not infer success from exit code alone. `EDITMODE_VERIFIED` requires valid NUnit XML with at least one passed test, zero failed/error/inconclusive tests, a safe Editor.log, exit code 0, proven process-tree exit, and unchanged original content and Git metadata.
 - Skipped tests remain visible warnings. They do not become failures when at least one test passed and no failed/error/inconclusive test exists.
 - If the scanner finds no confirmed test assembly, preserve `NO_CONFIRMED_TEST_ASSEMBLY`; do not run candidate assemblies or report a pass.
+- If a selected DLL was not built, preserve `TEST_ASSEMBLY_NOT_BUILT` under `EDITMODE_BLOCKED` and do not start the EditMode Unity process.
+- If NUnit reports zero discovered tests after the selected DLL was proven, preserve `NO_DISCOVERED_TEST_CASES` under `EDITMODE_BLOCKED`; do not describe it as a test pass.
+- Preserve raw source and isolation SHA-256 values, `fingerprintBindingClassification`, and the complete structured `fingerprintDelta`. Do not report raw fingerprint equality when only the narrow root-IDE projection matched.
 - If Baseline, Doctor, executable trust, source-editor association, fingerprint binding, process control, XML, log, or integrity evidence is unavailable or contradictory, preserve the blocking status.
 
 ## Report the result narrowly

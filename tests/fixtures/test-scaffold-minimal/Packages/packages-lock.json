@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "com.unity.test-framework": {
+      "version": "1.6.0",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {}
+    }
+  }
+}

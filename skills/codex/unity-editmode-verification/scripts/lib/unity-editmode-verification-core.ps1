@@ -124,6 +124,263 @@ function Get-UevJsonProperty {
     return $property.Value
 }
 
+# Tests whether one canonical relative path is a project-root IDE file Unity may regenerate.
+function Test-UevRootIdeGeneratedFilePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$RelativePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RelativePath)) {
+        return $false
+    }
+    $canonicalPath = $RelativePath.Replace('\\', '/')
+    if ($canonicalPath.Contains('/')) {
+        return $false
+    }
+    return (
+        $canonicalPath.EndsWith('.sln', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $canonicalPath.EndsWith('.csproj', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $canonicalPath.EndsWith('.csproj.user', [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+# Converts one copy-set snapshot file list into a validated ordinal path map.
+function Get-UevSnapshotFileMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Snapshot
+    )
+
+    $map = New-Object 'System.Collections.Generic.SortedDictionary[string,object]' ([System.StringComparer]::Ordinal)
+    foreach ($file in @((Get-UevJsonProperty -InputObject $Snapshot -Name 'files'))) {
+        $path = [string](Get-UevJsonProperty -InputObject $file -Name 'path')
+        $sha256 = [string](Get-UevJsonProperty -InputObject $file -Name 'sha256')
+        $lengthValue = Get-UevJsonProperty -InputObject $file -Name 'length'
+        if (
+            [string]::IsNullOrWhiteSpace($path) -or
+            $path.Contains('\\') -or
+            $path.StartsWith('/', [System.StringComparison]::Ordinal) -or
+            @($path.Split('/') | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -gt 0
+        ) {
+            throw "Copy-set snapshot contains a non-canonical file path: '$path'."
+        }
+        if ($sha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Copy-set snapshot contains an invalid SHA-256 for '$path'."
+        }
+        $length = [long]$lengthValue
+        if ($length -lt 0) {
+            throw "Copy-set snapshot contains a negative file length for '$path'."
+        }
+        if ($map.ContainsKey($path)) {
+            throw "Copy-set snapshot contains duplicate file path '$path'."
+        }
+        $map.Add($path, [pscustomobject][ordered]@{
+            path = $path
+            length = $length
+            sha256 = $sha256
+        })
+    }
+    return ,$map
+}
+
+# Compares the accepted source snapshot to a post-Baseline isolation snapshot with one narrow IDE-file allowance.
+function Get-UevIsolationFingerprintAssessment {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$SourceSnapshot,
+
+        [Parameter(Mandatory = $true)]
+        [object]$IsolationSnapshot
+    )
+
+    $sourceTreeSha256 = [string](Get-UevJsonProperty -InputObject $SourceSnapshot -Name 'treeSha256')
+    $isolationTreeSha256 = [string](Get-UevJsonProperty -InputObject $IsolationSnapshot -Name 'treeSha256')
+    if ($sourceTreeSha256 -notmatch '^[0-9a-f]{64}$' -or $isolationTreeSha256 -notmatch '^[0-9a-f]{64}$') {
+        throw 'Copy-set snapshot tree SHA-256 evidence is missing or malformed.'
+    }
+
+    $sourceDirectories = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($path in @((Get-UevJsonProperty -InputObject $SourceSnapshot -Name 'directories'))) {
+        if (-not $sourceDirectories.Add([string]$path)) {
+            throw "Source snapshot contains duplicate directory path '$path'."
+        }
+    }
+    $isolationDirectories = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($path in @((Get-UevJsonProperty -InputObject $IsolationSnapshot -Name 'directories'))) {
+        if (-not $isolationDirectories.Add([string]$path)) {
+            throw "Isolation snapshot contains duplicate directory path '$path'."
+        }
+    }
+
+    $addedDirectories = @($isolationDirectories | Where-Object { -not $sourceDirectories.Contains($_) } | Sort-Object)
+    $removedDirectories = @($sourceDirectories | Where-Object { -not $isolationDirectories.Contains($_) } | Sort-Object)
+    $sourceFiles = Get-UevSnapshotFileMap -Snapshot $SourceSnapshot
+    $isolationFiles = Get-UevSnapshotFileMap -Snapshot $IsolationSnapshot
+    $allowedAddedFiles = New-Object System.Collections.ArrayList
+    $allowedRemovedFiles = New-Object System.Collections.ArrayList
+    $allowedChangedFiles = New-Object System.Collections.ArrayList
+    $disallowedAddedFiles = New-Object System.Collections.ArrayList
+    $disallowedRemovedFiles = New-Object System.Collections.ArrayList
+    $disallowedChangedFiles = New-Object System.Collections.ArrayList
+
+    foreach ($path in $isolationFiles.Keys) {
+        if ($sourceFiles.ContainsKey($path)) {
+            continue
+        }
+        $record = [ordered]@{
+            path = $path
+            isolationLength = [long]$isolationFiles[$path].length
+            isolationSha256 = [string]$isolationFiles[$path].sha256
+        }
+        if (Test-UevRootIdeGeneratedFilePath -RelativePath $path) {
+            [void]$allowedAddedFiles.Add($record)
+        } else {
+            [void]$disallowedAddedFiles.Add($record)
+        }
+    }
+    foreach ($path in $sourceFiles.Keys) {
+        if (-not $isolationFiles.ContainsKey($path)) {
+            $record = [ordered]@{
+                path = $path
+                sourceLength = [long]$sourceFiles[$path].length
+                sourceSha256 = [string]$sourceFiles[$path].sha256
+            }
+            if (Test-UevRootIdeGeneratedFilePath -RelativePath $path) {
+                [void]$allowedRemovedFiles.Add($record)
+            } else {
+                [void]$disallowedRemovedFiles.Add($record)
+            }
+            continue
+        }
+        $sourceFile = $sourceFiles[$path]
+        $isolationFile = $isolationFiles[$path]
+        if (
+            [long]$sourceFile.length -eq [long]$isolationFile.length -and
+            [string]$sourceFile.sha256 -ceq [string]$isolationFile.sha256
+        ) {
+            continue
+        }
+        $record = [ordered]@{
+            path = $path
+            sourceLength = [long]$sourceFile.length
+            isolationLength = [long]$isolationFile.length
+            sourceSha256 = [string]$sourceFile.sha256
+            isolationSha256 = [string]$isolationFile.sha256
+        }
+        if (Test-UevRootIdeGeneratedFilePath -RelativePath $path) {
+            [void]$allowedChangedFiles.Add($record)
+        } else {
+            [void]$disallowedChangedFiles.Add($record)
+        }
+    }
+
+    $allowedDeltaCount = $allowedAddedFiles.Count + $allowedRemovedFiles.Count + $allowedChangedFiles.Count
+    $disallowedDeltaCount = (
+        $addedDirectories.Count + $removedDirectories.Count +
+        $disallowedAddedFiles.Count + $disallowedRemovedFiles.Count + $disallowedChangedFiles.Count
+    )
+    $entrySetsMatch = $allowedDeltaCount -eq 0 -and $disallowedDeltaCount -eq 0
+    $snapshotHashContradiction = $entrySetsMatch -and $sourceTreeSha256 -cne $isolationTreeSha256
+    $exactMatch = $entrySetsMatch -and -not $snapshotHashContradiction
+    $accepted = $disallowedDeltaCount -eq 0 -and -not $snapshotHashContradiction
+    $classification = if ($exactMatch) {
+        'EXACT_MATCH'
+    } elseif ($accepted) {
+        'ROOT_IDE_GENERATED_FILES_ONLY'
+    } else {
+        'UNSAFE_DELTA'
+    }
+
+    return [pscustomobject][ordered]@{
+        accepted = $accepted
+        exactMatch = $exactMatch
+        classification = $classification
+        sourceTreeSha256 = $sourceTreeSha256
+        isolationTreeSha256 = $isolationTreeSha256
+        allowedRootIdeSuffixes = @('.sln', '.csproj', '.csproj.user')
+        addedDirectories = $addedDirectories
+        removedDirectories = $removedDirectories
+        allowedAddedFiles = @($allowedAddedFiles)
+        allowedRemovedFiles = @($allowedRemovedFiles)
+        allowedChangedFiles = @($allowedChangedFiles)
+        disallowedAddedFiles = @($disallowedAddedFiles)
+        disallowedRemovedFiles = @($disallowedRemovedFiles)
+        disallowedChangedFiles = @($disallowedChangedFiles)
+        allowedDeltaCount = $allowedDeltaCount
+        disallowedDeltaCount = $disallowedDeltaCount
+        snapshotHashContradiction = $snapshotHashContradiction
+    }
+}
+
+# Verifies that every selected test assembly produced a non-reparse DLL in the accepted Baseline isolation.
+function Get-UevSelectedAssemblyBinaryAssessment {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectCopyPath,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$AssemblyNames
+    )
+
+    $normalizedProjectCopy = Get-UevNormalizedPath -Path $ProjectCopyPath
+    $scriptAssembliesRoot = Get-UevNormalizedPath -Path (Join-Path $normalizedProjectCopy 'Library\ScriptAssemblies')
+    if (-not (Test-UevPathWithinRoot -Path $scriptAssembliesRoot -Root $normalizedProjectCopy)) {
+        throw 'ScriptAssemblies path escapes the accepted Baseline isolation.'
+    }
+    $rootReparsePoint = Get-UevReparsePointOnPath -Path $scriptAssembliesRoot
+    if ($null -ne $rootReparsePoint) {
+        throw "ScriptAssemblies path traverses reparse point $rootReparsePoint."
+    }
+
+    $records = New-Object System.Collections.ArrayList
+    $missingAssemblyNames = New-Object System.Collections.ArrayList
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($assemblyName in @($AssemblyNames | Sort-Object)) {
+        if ($assemblyName -notmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,199}$') {
+            throw "Selected test assembly '$assemblyName' has an unsafe or unsupported name."
+        }
+        if (-not $seen.Add($assemblyName)) {
+            throw "Selected test assembly '$assemblyName' is duplicated case-insensitively."
+        }
+        $expectedPath = Get-UevNormalizedPath -Path (Join-Path $scriptAssembliesRoot ($assemblyName + '.dll'))
+        if (-not (Test-UevPathWithinRoot -Path $expectedPath -Root $scriptAssembliesRoot)) {
+            throw "Selected test assembly path escapes ScriptAssemblies: $assemblyName"
+        }
+        $exists = Test-Path -LiteralPath $expectedPath -PathType Leaf
+        $byteLength = $null
+        $sha256 = $null
+        if ($exists) {
+            $reparsePoint = Get-UevReparsePointOnPath -Path $expectedPath
+            if ($null -ne $reparsePoint) {
+                throw "Selected test assembly binary traverses reparse point $reparsePoint."
+            }
+            $item = Get-Item -LiteralPath $expectedPath -Force -ErrorAction Stop
+            $byteLength = [long]$item.Length
+            if ($byteLength -le 0) {
+                $exists = $false
+            } else {
+                $sha256 = Get-UevFileSha256 -Path $expectedPath
+            }
+        }
+        if (-not $exists) {
+            [void]$missingAssemblyNames.Add($assemblyName)
+        }
+        [void]$records.Add([ordered]@{
+            assemblyName = $assemblyName
+            expectedPath = $expectedPath
+            exists = $exists
+            byteLength = $byteLength
+            sha256 = $sha256
+        })
+    }
+
+    return [pscustomobject][ordered]@{
+        completed = $true
+        accepted = $records.Count -gt 0 -and $missingAssemblyNames.Count -eq 0
+        scriptAssembliesRoot = $scriptAssembliesRoot
+        records = @($records)
+        missingAssemblyNames = @($missingAssemblyNames)
+    }
+}
+
 # Validates and deterministically orders Doctor-confirmed assembly names.
 function Get-UevAssemblySelection {
     param(
@@ -260,6 +517,88 @@ function ConvertTo-UevBoundedDiagnostic {
         return $singleLine
     }
     return $singleLine.Substring(0, $MaximumLength)
+}
+
+# Preserves concrete Baseline failures and process-cleanup evidence before narrow handoff validation.
+function Get-UevBaselineDiagnosticSummary {
+    param(
+        [Parameter(Mandatory = $true)][object]$Baseline
+    )
+
+    $editorLog = Get-UevJsonProperty -InputObject $Baseline -Name 'editorLog'
+    $processControl = Get-UevJsonProperty -InputObject $Baseline -Name 'processControl'
+    $compilerErrors = @(
+        @((Get-UevJsonProperty -InputObject $editorLog -Name 'compilerErrors')) |
+            Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+            ForEach-Object { ConvertTo-UevBoundedDiagnostic -Value ([string]$_) }
+    )
+    $failureMarkers = @(@((Get-UevJsonProperty -InputObject $editorLog -Name 'failureMarkers')) | Where-Object { $null -ne $_ })
+    $failures = @(@((Get-UevJsonProperty -InputObject $Baseline -Name 'failures')) | Where-Object { $null -ne $_ })
+    $blockers = @(@((Get-UevJsonProperty -InputObject $Baseline -Name 'blockers')) | Where-Object { $null -ne $_ })
+    $compilerErrorCountValue = Get-UevJsonProperty -InputObject $editorLog -Name 'compilerErrorCount'
+    $compilerErrorCount = if ($null -eq $compilerErrorCountValue) { $compilerErrors.Count } else { [int]$compilerErrorCountValue }
+
+    $primaryCode = $null
+    $primaryMessage = $null
+    if ($compilerErrorCount -gt 0) {
+        $primaryCode = 'BASELINE_SCRIPT_COMPILATION_FAILED'
+        $primaryMessage = if ($compilerErrors.Count -gt 0) { [string]$compilerErrors[0] } else { "$compilerErrorCount compiler error occurrence(s) were reported." }
+    } elseif ($failures.Count -gt 0) {
+        $primaryCode = [string](Get-UevJsonProperty -InputObject $failures[0] -Name 'code')
+        $primaryMessage = ConvertTo-UevBoundedDiagnostic -Value ([string](Get-UevJsonProperty -InputObject $failures[0] -Name 'message'))
+    } elseif ($blockers.Count -gt 0) {
+        $primaryCode = [string](Get-UevJsonProperty -InputObject $blockers[0] -Name 'code')
+        $primaryMessage = ConvertTo-UevBoundedDiagnostic -Value ([string](Get-UevJsonProperty -InputObject $blockers[0] -Name 'message'))
+    } elseif ([string](Get-UevJsonProperty -InputObject $Baseline -Name 'finalStatus') -ne 'BASELINE_VERIFIED') {
+        $primaryCode = 'BASELINE_NOT_VERIFIED'
+        $primaryMessage = "Baseline finalStatus is $([string](Get-UevJsonProperty -InputObject $Baseline -Name 'finalStatus'))."
+    }
+
+    return [pscustomobject][ordered]@{
+        finalStatus = [string](Get-UevJsonProperty -InputObject $Baseline -Name 'finalStatus')
+        primaryCause = if ($null -eq $primaryCode) { $null } else { [ordered]@{ code = $primaryCode; message = $primaryMessage } }
+        compilerErrorCount = $compilerErrorCount
+        compilerErrors = @($compilerErrors)
+        failureMarkers = @($failureMarkers)
+        failures = @($failures)
+        blockers = @($blockers)
+        processCleanup = [ordered]@{
+            terminationRequested = Get-UevJsonProperty -InputObject $processControl -Name 'terminationRequested'
+            terminationReason = Get-UevJsonProperty -InputObject $processControl -Name 'terminationReason'
+            terminationApiSucceeded = Get-UevJsonProperty -InputObject $processControl -Name 'terminationApiSucceeded'
+            processTreeExitVerified = Get-UevJsonProperty -InputObject $processControl -Name 'processTreeExitVerified'
+            activeProcessCountAfterWait = Get-UevJsonProperty -InputObject $processControl -Name 'activeProcessCountAfterWait'
+        }
+    }
+}
+
+# Maps incomplete NUnit evidence to a precise blocker without changing the fixed final-status contract.
+function Get-UevNUnitEvidenceDecision {
+    param(
+        [Parameter(Mandatory = $true)][object]$NUnitAnalysis
+    )
+
+    $classification = [string](Get-UevJsonProperty -InputObject $NUnitAnalysis -Name 'classification')
+    if (@('PASSED', 'PASSED_WITH_SKIPS') -contains $classification) {
+        return [pscustomobject][ordered]@{ accepted = $true; blockerCode = $null; message = $null }
+    }
+    if ($classification -eq 'ZERO_TESTS') {
+        return [pscustomobject][ordered]@{
+            accepted = $false
+            blockerCode = 'NO_DISCOVERED_TEST_CASES'
+            message = 'The selected test assembly binary exists, but NUnit discovered zero test cases.'
+        }
+    }
+    $errorText = [string](Get-UevJsonProperty -InputObject $NUnitAnalysis -Name 'error')
+    $message = "NUnit XML classification is $classification."
+    if (-not [string]::IsNullOrWhiteSpace($errorText)) {
+        $message += ' ' + (ConvertTo-UevBoundedDiagnostic -Value $errorText)
+    }
+    return [pscustomobject][ordered]@{
+        accepted = $false
+        blockerCode = 'NUNIT_EVIDENCE_INCONCLUSIVE'
+        message = $message
+    }
 }
 
 # Parses NUnit 3 or legacy NUnit 2 XML into a strict EditMode summary.
@@ -505,7 +844,10 @@ function Get-UevEditorLogAnalysis {
         [pscustomobject]@{ code = 'FATAL_ERROR'; pattern = 'Fatal Error!' },
         [pscustomobject]@{ code = 'CRASH'; pattern = '^Crash!!!\s*$' },
         [pscustomobject]@{ code = 'NONZERO_RETURN_CODE'; pattern = 'Application will terminate with return code [1-9]\d*' },
-        [pscustomobject]@{ code = 'PACKAGE_RESOLUTION_FAILED'; pattern = '(?:An error occurred while resolving packages|Package resolution failed)' }
+        [pscustomobject]@{ code = 'PACKAGE_RESOLUTION_FAILED'; pattern = '(?:An error occurred while resolving packages|Package resolution failed)' },
+        [pscustomobject]@{ code = 'ASSET_META_YAML_PARSE_ERROR'; pattern = '(?:YAML Parsing error|\.meta(?: file)?[^\r\n]*could not be parsed|could not be parsed[^\r\n]*valid YAML)' },
+        [pscustomobject]@{ code = 'ASSET_META_GUID_INVALID'; pattern = '\.meta(?: file)?[^\r\n]*(?:does not have a valid GUID|has an invalid GUID)' },
+        [pscustomobject]@{ code = 'ASMDEF_IMPORT_FAILED'; pattern = '(?:(?:\.asmdef|Assembly Definition)[^\r\n]*(?:could not be parsed|could not be imported|failed to import|will be ignored)|(?:could not be parsed|failed to import)[^\r\n]*(?:\.asmdef|Assembly Definition))' }
     )
     $failures = New-Object System.Collections.ArrayList
     foreach ($definition in $definitions) {

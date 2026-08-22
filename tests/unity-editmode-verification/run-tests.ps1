@@ -79,6 +79,38 @@ function Get-TestTreeSnapshot {
     return [string]::Join("`n", [string[]]$records)
 }
 
+# Creates one deterministic copy-set file record for fingerprint assessment tests.
+function New-TestFingerprintFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]$')][string]$DigestCharacter,
+        [Parameter()][long]$Length = 1
+    )
+
+    return [pscustomobject][ordered]@{
+        path = $Path
+        length = $Length
+        sha256 = $DigestCharacter * 64
+    }
+}
+
+# Creates one deterministic in-memory copy-set snapshot without touching a Unity project.
+function New-TestFingerprintSnapshot {
+    param(
+        [Parameter()][string[]]$Directories = @(),
+        [Parameter()][object[]]$Files = @(),
+        [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]$')][string]$TreeDigestCharacter
+    )
+
+    return [pscustomobject][ordered]@{
+        directories = @($Directories)
+        files = @($Files)
+        directoryCount = @($Directories).Count
+        fileCount = @($Files).Count
+        treeSha256 = $TreeDigestCharacter * 64
+    }
+}
+
 # Reports whether this Windows token can create a temporary directory symbolic link.
 function Test-SymbolicLinkCapability {
     $target = Join-Path $script:ScratchRoot 'symlink-capability-target'
@@ -267,6 +299,16 @@ try {
         Assert-True -Condition ($null -ne (Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json -ErrorAction Stop)) -Message "Schema parses: $schemaPath"
     }
 
+    $runnerContent = Get-Content -Raw -LiteralPath $script:RunnerPath
+    $fingerprintCallIndex = $runnerContent.LastIndexOf('Test-UevFingerprintBindings')
+    $binaryPreflightCallIndex = $runnerContent.LastIndexOf('Test-UevSelectedAssemblyBinaries')
+    $editModeCallIndex = $runnerContent.LastIndexOf('Invoke-UevEditModeTests')
+    Assert-True -Condition ($fingerprintCallIndex -ge 0 -and $binaryPreflightCallIndex -gt $fingerprintCallIndex) -Message 'Production runner invokes selected-DLL proof after fingerprint binding'
+    Assert-True -Condition ($editModeCallIndex -gt $binaryPreflightCallIndex) -Message 'Production runner invokes selected-DLL proof before the EditMode Unity process'
+    Assert-True -Condition $runnerContent.Contains('selectedAssemblyBinariesPresent = $false') -Message 'Production result initializes selected-DLL preflight evidence fail-closed'
+    Assert-True -Condition $runnerContent.Contains("-Code 'TEST_ASSEMBLY_NOT_BUILT'") -Message 'Production runner preserves a missing selected-DLL blocker'
+    Assert-True -Condition $runnerContent.Contains('$script:Result.baseline.diagnostics = Get-UevBaselineDiagnosticSummary') -Message 'Production runner preserves Baseline diagnostics before handoff rejection'
+
     $selection = Get-UevAssemblySelection -ConfirmedAssemblies @(
         [pscustomobject]@{ name = 'Zeta.Tests'; path = 'Assets/Zeta.Tests.asmdef'; evidence = @('optionalUnityReferences:TestAssemblies') },
         [pscustomobject]@{ name = 'Alpha.Tests'; path = 'Assets/Alpha.Tests.asmdef'; evidence = @('reference:UnityEditor.TestRunner') }
@@ -282,6 +324,126 @@ try {
     $emptySelection = Get-UevAssemblySelection -ConfirmedAssemblies @()
     Assert-True -Condition $emptySelection.accepted -Message 'Empty confirmed selection is a valid no-evidence state'
     Assert-Equal -Expected 0 -Actual $emptySelection.names.Count -Message 'Empty selection has no names'
+
+    Assert-True -Condition (Test-UevRootIdeGeneratedFilePath -RelativePath 'project.sln') -Message 'Root solution is a narrow generated-IDE path'
+    Assert-True -Condition (Test-UevRootIdeGeneratedFilePath -RelativePath 'Assembly-CSharp.csproj') -Message 'Root C# project is a narrow generated-IDE path'
+    Assert-True -Condition (Test-UevRootIdeGeneratedFilePath -RelativePath 'Assembly-CSharp.csproj.user') -Message 'Root C# project user file is a narrow generated-IDE path'
+    Assert-True -Condition (-not (Test-UevRootIdeGeneratedFilePath -RelativePath 'Assets/Assembly-CSharp.csproj')) -Message 'Nested C# project is not allowlisted'
+    Assert-True -Condition (-not (Test-UevRootIdeGeneratedFilePath -RelativePath 'project.sln.DotSettings')) -Message 'Unlisted root IDE suffix is not allowlisted'
+
+    $sourceFingerprintSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'a' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '1' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '3' -Length 30),
+            (New-TestFingerprintFile -Path 'Legacy.sln' -DigestCharacter '4' -Length 40)
+        )
+    $exactFingerprintSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'a' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '1' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '3' -Length 30),
+            (New-TestFingerprintFile -Path 'Legacy.sln' -DigestCharacter '4' -Length 40)
+        )
+    $exactFingerprintAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $exactFingerprintSnapshot
+    Assert-True -Condition $exactFingerprintAssessment.accepted -Message 'Exact reusable isolation fingerprint is accepted'
+    Assert-True -Condition $exactFingerprintAssessment.exactMatch -Message 'Exact reusable isolation is classified as an exact match'
+    Assert-Equal -Expected 'EXACT_MATCH' -Actual $exactFingerprintAssessment.classification -Message 'Exact fingerprint classification is stable'
+
+    $generatedIdeDeltaSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'b' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '1' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '5' -Length 35),
+            (New-TestFingerprintFile -Path 'project.sln' -DigestCharacter '6' -Length 60)
+        )
+    $generatedIdeAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $generatedIdeDeltaSnapshot
+    Assert-True -Condition $generatedIdeAssessment.accepted -Message 'Only root IDE-generated file delta is accepted'
+    Assert-True -Condition (-not $generatedIdeAssessment.exactMatch) -Message 'Allowed generated-file delta is not reported as raw fingerprint equality'
+    Assert-Equal -Expected 'ROOT_IDE_GENERATED_FILES_ONLY' -Actual $generatedIdeAssessment.classification -Message 'Generated-file-only classification is explicit'
+    Assert-Equal -Expected 3 -Actual $generatedIdeAssessment.allowedDeltaCount -Message 'Added, removed, and changed root IDE files are all recorded'
+    Assert-Equal -Expected 'project.sln' -Actual $generatedIdeAssessment.allowedAddedFiles[0].path -Message 'Added root solution path is recorded'
+    Assert-Equal -Expected 'Legacy.sln' -Actual $generatedIdeAssessment.allowedRemovedFiles[0].path -Message 'Removed root solution path is recorded'
+    Assert-Equal -Expected 'Assembly-CSharp.csproj' -Actual $generatedIdeAssessment.allowedChangedFiles[0].path -Message 'Changed root C# project hashes are recorded'
+    Assert-Equal -Expected ('3' * 64) -Actual $generatedIdeAssessment.allowedChangedFiles[0].sourceSha256 -Message 'Changed root C# project source hash is preserved'
+    Assert-Equal -Expected ('5' * 64) -Actual $generatedIdeAssessment.allowedChangedFiles[0].isolationSha256 -Message 'Changed root C# project isolation hash is preserved'
+    $generatedIdeAssessmentRepeat = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $generatedIdeDeltaSnapshot
+    Assert-Equal -Expected ($generatedIdeAssessment | ConvertTo-Json -Depth 20 -Compress) -Actual ($generatedIdeAssessmentRepeat | ConvertTo-Json -Depth 20 -Compress) -Message 'Generated IDE delta evidence is deterministic'
+
+    $assetMutationSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'c' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '9' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '3' -Length 30),
+            (New-TestFingerprintFile -Path 'Legacy.sln' -DigestCharacter '4' -Length 40)
+        )
+    $assetMutationAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $assetMutationSnapshot
+    Assert-True -Condition (-not $assetMutationAssessment.accepted) -Message 'Assets mutation remains fail-closed'
+    Assert-Equal -Expected 'Assets/Game.cs' -Actual $assetMutationAssessment.disallowedChangedFiles[0].path -Message 'Changed source path is structured in evidence'
+
+    $rootMutationSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'd' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '1' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '3' -Length 30),
+            (New-TestFingerprintFile -Path 'Legacy.sln' -DigestCharacter '4' -Length 40),
+            (New-TestFingerprintFile -Path 'README.md' -DigestCharacter '7' -Length 70)
+        )
+    $rootMutationAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $rootMutationSnapshot
+    Assert-True -Condition (-not $rootMutationAssessment.accepted) -Message 'Arbitrary project-root file addition remains fail-closed'
+    Assert-Equal -Expected 'README.md' -Actual $rootMutationAssessment.disallowedAddedFiles[0].path -Message 'Arbitrary root delta is structured in evidence'
+
+    $nestedIdeSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'e' `
+        -Directories @('Assets', 'ProjectSettings', 'Tools') `
+        -Files @(
+            (New-TestFingerprintFile -Path 'Assets/Game.cs' -DigestCharacter '1' -Length 10),
+            (New-TestFingerprintFile -Path 'ProjectSettings/ProjectVersion.txt' -DigestCharacter '2' -Length 20),
+            (New-TestFingerprintFile -Path 'Assembly-CSharp.csproj' -DigestCharacter '3' -Length 30),
+            (New-TestFingerprintFile -Path 'Legacy.sln' -DigestCharacter '4' -Length 40),
+            (New-TestFingerprintFile -Path 'Tools/Generated.csproj' -DigestCharacter '8' -Length 80)
+        )
+    $nestedIdeAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $nestedIdeSnapshot
+    Assert-True -Condition (-not $nestedIdeAssessment.accepted) -Message 'Nested C# project addition is not treated as root IDE output'
+    Assert-Equal -Expected 'Tools/Generated.csproj' -Actual $nestedIdeAssessment.disallowedAddedFiles[0].path -Message 'Nested IDE-like path is structured as disallowed'
+
+    $directoryDeltaSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter 'f' `
+        -Directories @('Assets', 'Generated', 'ProjectSettings', 'Tools') `
+        -Files @($sourceFingerprintSnapshot.files)
+    $directoryDeltaAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $directoryDeltaSnapshot
+    Assert-True -Condition (-not $directoryDeltaAssessment.accepted) -Message 'Any directory delta remains fail-closed'
+    Assert-Equal -Expected 'Generated' -Actual $directoryDeltaAssessment.addedDirectories[0] -Message 'Directory delta is structured in evidence'
+
+    $contradictoryHashSnapshot = New-TestFingerprintSnapshot `
+        -TreeDigestCharacter '9' `
+        -Directories @($sourceFingerprintSnapshot.directories) `
+        -Files @($sourceFingerprintSnapshot.files)
+    $contradictoryHashAssessment = Get-UevIsolationFingerprintAssessment -SourceSnapshot $sourceFingerprintSnapshot -IsolationSnapshot $contradictoryHashSnapshot
+    Assert-True -Condition (-not $contradictoryHashAssessment.accepted) -Message 'Equal entries with contradictory tree hashes remain fail-closed'
+    Assert-True -Condition $contradictoryHashAssessment.snapshotHashContradiction -Message 'Contradictory tree hash evidence is explicit'
+
+    $binaryProject = Join-Path $script:ScratchRoot 'binary-preflight\project'
+    $scriptAssembliesRoot = Join-Path $binaryProject 'Library\ScriptAssemblies'
+    Write-TestText -Path (Join-Path $scriptAssembliesRoot 'Alpha.Tests.dll') -Content 'deterministic fake assembly bytes'
+    $binaryPresent = Get-UevSelectedAssemblyBinaryAssessment -ProjectCopyPath $binaryProject -AssemblyNames @('Alpha.Tests')
+    Assert-True -Condition $binaryPresent.accepted -Message 'A non-empty selected test assembly DLL is accepted'
+    Assert-Equal -Expected 1 -Actual $binaryPresent.records.Count -Message 'Selected DLL evidence has one deterministic record'
+    Assert-True -Condition ([string]$binaryPresent.records[0].sha256 -match '^[0-9a-f]{64}$') -Message 'Selected DLL SHA-256 is preserved'
+    $binaryMissing = Get-UevSelectedAssemblyBinaryAssessment -ProjectCopyPath $binaryProject -AssemblyNames @('Alpha.Tests', 'Missing.Tests')
+    Assert-True -Condition (-not $binaryMissing.accepted) -Message 'A missing selected test assembly DLL blocks preflight'
+    Assert-Equal -Expected 'Missing.Tests' -Actual $binaryMissing.missingAssemblyNames[0] -Message 'Missing selected DLL name is exact'
+    Assert-True -Condition (-not (Get-UevSelectedAssemblyBinaryAssessment -ProjectCopyPath $binaryProject -AssemblyNames @()).accepted) -Message 'An empty selected binary set is never accepted'
 
     $argumentRoot = Join-Path $script:ScratchRoot 'paths with spaces'
     $arguments = New-UevUnityArguments -ProjectPath (Join-Path $argumentRoot 'project') -AssemblyNames 'Alpha.Tests;Zeta.Tests' -TestResultsPath (Join-Path $argumentRoot 'result.xml') -EditorLogPath (Join-Path $argumentRoot 'Editor.log') -UpmLogPath (Join-Path $argumentRoot 'upm.log')
@@ -316,6 +478,36 @@ try {
     $errorAnalysis = Get-UevNUnitAnalysis -Path (Join-Path $nunitRoot 'error.xml')
     Assert-Equal -Expected 1 -Actual $errorAnalysis.errors -Message 'Error test evidence is counted'
     Assert-Equal -Expected 0 -Actual $errorAnalysis.failed -Message 'NUnit3 Error cases are not double-counted as failures'
+    $zeroDecision = Get-UevNUnitEvidenceDecision -NUnitAnalysis (Get-UevNUnitAnalysis -Path (Join-Path $nunitRoot 'zero.xml'))
+    Assert-Equal -Expected 'NO_DISCOVERED_TEST_CASES' -Actual $zeroDecision.blockerCode -Message 'Zero tests after DLL preflight has a precise blocker'
+    Assert-True -Condition (-not $zeroDecision.message.EndsWith(':', [System.StringComparison]::Ordinal)) -Message 'Zero-test message has no dangling colon'
+    Assert-True -Condition (Get-UevNUnitEvidenceDecision -NUnitAnalysis (Get-UevNUnitAnalysis -Path (Join-Path $nunitRoot 'passed.xml'))).accepted -Message 'Passed NUnit evidence is accepted'
+    $invalidNunitDecision = Get-UevNUnitEvidenceDecision -NUnitAnalysis (Get-UevNUnitAnalysis -Path (Join-Path $nunitRoot 'malformed.xml'))
+    Assert-Equal -Expected 'NUNIT_EVIDENCE_INCONCLUSIVE' -Actual $invalidNunitDecision.blockerCode -Message 'Malformed NUnit evidence remains inconclusive'
+    Assert-True -Condition (-not $invalidNunitDecision.message.EndsWith(':', [System.StringComparison]::Ordinal)) -Message 'Malformed NUnit message has no dangling colon'
+
+    $logProject = Join-Path $script:ScratchRoot 'editor-log-project'
+    [void][System.IO.Directory]::CreateDirectory($logProject)
+    $safeLogLines = @(
+        "Built from '6000.0/staging' branch; Version is '6000.0.69f1 (fixture) revision fixture'",
+        'BatchMode: 1, IsHumanControllingUs: 0',
+        "Successfully changed project path to: $logProject",
+        'runTests started through Unity Test Framework'
+    )
+    $safeDiagnosticLog = Join-Path $script:ScratchRoot 'safe-diagnostic.log'
+    Write-TestText -Path $safeDiagnosticLog -Content ([string]::Join("`n", @($safeLogLines + 'Licensing access-token error did not affect the test run.')))
+    Assert-Equal -Expected 'SAFE' -Actual (Get-UevEditorLogAnalysis -Path $safeDiagnosticLog -ExpectedUnityVersion '6000.0.69f1' -ExpectedProjectPath $logProject).classification -Message 'Unrelated licensing text is not an asset-import failure'
+    foreach ($logCase in @(
+        [pscustomobject]@{ name = 'meta-yaml'; line = 'YAML Parsing error at Assets/Tests.meta'; code = 'ASSET_META_YAML_PARSE_ERROR' },
+        [pscustomobject]@{ name = 'meta-guid'; line = 'Assets/Tests.meta does not have a valid GUID'; code = 'ASSET_META_GUID_INVALID' },
+        [pscustomobject]@{ name = 'asmdef-import'; line = 'Assembly Definition Assets/Tests/Example.Tests.asmdef failed to import'; code = 'ASMDEF_IMPORT_FAILED' }
+    )) {
+        $path = Join-Path $script:ScratchRoot ($logCase.name + '.log')
+        Write-TestText -Path $path -Content ([string]::Join("`n", @($safeLogLines + $logCase.line)))
+        $analysis = Get-UevEditorLogAnalysis -Path $path -ExpectedUnityVersion '6000.0.69f1' -ExpectedProjectPath $logProject
+        Assert-Equal -Expected 'FAILURE' -Actual $analysis.classification -Message "$($logCase.name) is a concrete EditMode log failure"
+        Assert-True -Condition (@($analysis.failureMarkers | Where-Object { $_.code -eq $logCase.code }).Count -eq 1) -Message "$($logCase.name) preserves its precise failure code"
+    }
 
     $sourceRoot = 'C:\Source\Project'
     $zero = Get-UevSourceEditorAssessment -ProjectRoot $sourceRoot -RunningProcesses @()
@@ -348,6 +540,30 @@ try {
     $changedUnity = $currentUnity.PSObject.Copy()
     $changedUnity.executableSha256 = ('b' * 64)
     Assert-True -Condition (-not (Get-UevUnityTrustAssessment -BaselineUnity $baselineUnity -CurrentUnity $changedUnity -ExpectedUnityVersion '6000.0.69f1').accepted) -Message 'Changed Unity SHA blocks'
+
+    $failedBaselineDiagnostics = Get-UevBaselineDiagnosticSummary -Baseline ([pscustomobject]@{
+        finalStatus = 'BASELINE_FAILED'
+        editorLog = [pscustomobject]@{
+            compilerErrorCount = 9
+            compilerErrors = @('Assets/GameManager.cs(1,1): error CS0234: InputSystem missing', 'Assets/RuntimeUi.cs(1,1): error CS0234: InputSystem missing')
+            failureMarkers = @([pscustomobject]@{ code = 'COMPILER_ERROR'; line = 'first compiler error' })
+        }
+        processControl = [pscustomobject]@{
+            terminationRequested = $true
+            terminationReason = 'DESCENDANTS_REMAINED_AFTER_ROOT_EXIT'
+            terminationApiSucceeded = $true
+            processTreeExitVerified = $true
+            activeProcessCountAfterWait = 0
+        }
+        failures = @([pscustomobject]@{ code = 'SCRIPT_COMPILATION_FAILED'; message = 'Compilation failed.' })
+        blockers = @()
+    })
+    Assert-Equal -Expected 'BASELINE_SCRIPT_COMPILATION_FAILED' -Actual $failedBaselineDiagnostics.primaryCause.code -Message 'Baseline compiler failure is the preserved primary cause'
+    Assert-Equal -Expected 9 -Actual $failedBaselineDiagnostics.compilerErrorCount -Message 'Baseline compiler occurrence count is preserved'
+    Assert-Equal -Expected 2 -Actual $failedBaselineDiagnostics.compilerErrors.Count -Message 'Available concrete Baseline compiler lines are preserved'
+    Assert-Equal -Expected 'DESCENDANTS_REMAINED_AFTER_ROOT_EXIT' -Actual $failedBaselineDiagnostics.processCleanup.terminationReason -Message 'Baseline cleanup remains a separate diagnostic axis'
+    Assert-Equal -Expected 0 -Actual $failedBaselineDiagnostics.processCleanup.activeProcessCountAfterWait -Message 'Successful Baseline cleanup is preserved'
+    Assert-Equal -Expected $null -Actual (Get-UevBaselineDiagnosticSummary -Baseline (New-TestBaselineHandoff)).primaryCause -Message 'Accepted Baseline has no synthetic primary failure'
 
     $validHandoff = New-TestBaselineHandoff
     Assert-Equal -Expected 0 -Actual @(Invoke-JsonSchemaValidation -Instance $validHandoff -SchemaPath $script:HandoffSchemaPath).Count -Message 'Valid narrow handoff schema'
