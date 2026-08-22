@@ -33,7 +33,7 @@ Unity Agent Pipeline은 여러 Unity 프로젝트에서 재사용하는 명시�
 - 원본·Doctor·Baseline의 pre-Unity fingerprint는 exact match를 요구한다. Baseline Unity가 격리본 루트에 재생성한 `.sln`, `.csproj`, `.csproj.user`만 구조화된 delta로 허용하며, 그 밖의 파일·디렉터리 변화는 계속 차단한다.
 - NUnit XML, Editor.log, child exit, signed Unity identity, Job Object process-tree 종료, 원본 copy-set 및 Git metadata를 함께 판정한다. 거부된 Baseline의 compiler/failure/process-cleanup 진단도 중첩 결과에 보존한다.
 - 하나 이상의 passed test와 0 failed/error/inconclusive일 때만 `EDITMODE_VERIFIED`다. skipped test는 warning으로 보존한다. confirmed assembly가 없거나 선택 DLL이 생성되지 않았으면 Unity를 두 번째로 실행하지 않으며, 유효한 XML의 0 tests는 `NO_DISCOVERED_TEST_CASES`로 차단한다.
-- 2026-08-22 pre-hardening 실제 signed-Unity 실행에서 의미 있는 테스트 4개가 통과했지만 이후 production safety gate가 변경됐다. 따라서 현 revision의 최종 signed-Unity acceptance는 구현 commit과 Windows CI 뒤에 다시 수행해야 하며, 현재 문서는 승인 성공을 주장하지 않는다. PlayMode, Player Build 및 runtime은 항상 `NOT_VERIFIED`다.
+- commit `56001b16e67a8f9543d2bf8eca90706d1faa3511`은 네 Windows workflow 통과 후 실제 signed Unity `6000.0.69f1`에서 selected DLL과 의미 있는 EditMode 테스트 4개를 검증해 [APPROVED — SCRIPT COMPILATION + SELECTED EDITMODE TESTS ONLY](docs/validation/v0.1.0-editmode-real-unity-acceptance.md)로 기록됐다. PlayMode, Player Build 및 runtime은 항상 `NOT_VERIFIED`다.
 
 ## Test Scaffold 0.1.0 (Unreleased)
 

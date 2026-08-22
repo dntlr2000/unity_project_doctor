@@ -47,9 +47,9 @@
 
 - Doctor와 Baseline 기존 회귀, 새 EditMode core/fake-process/XML/source-editor/installer 회귀 및 PowerShell parse 검사를 `TEMP`/`TMP=E:\CodexTemp`에서 수행
 - Test Scaffold의 PLAN determinism, missing/wrong hash, exact APPLY delta, rollback, ambiguity, collision, path escape, Doctor handoff, installer 및 schema 회귀를 수행
-- 이번 hardening 및 Test Scaffold 회귀에서는 실제 Unity/Unity Hub를 실행하지 않았고 compilation 또는 EditMode 승인 성공을 주장하지 않음
-- 2026-08-22 pre-hardening 실제 Unity 실행에서 의미 있는 EditMode test 4개가 모두 통과했지만, 이후 production hardening이 추가됐으므로 현 revision의 최종 acceptance로 승격하지 않음
-- post-hardening signed-Unity acceptance gate는 계속 `NOT RUN — PROCEDURE ONLY`
+- hardening과 Test Scaffold 구현 중에는 실제 Unity/Unity Hub를 실행하지 않았으며, production commit `56001b16e67a8f9543d2bf8eca90706d1faa3511`과 네 Windows CI 성공 후 별도 acceptance를 수행
+- post-hardening signed Unity `6000.0.69f1`에서 Baseline Script Compilation, selected-DLL preflight 및 의미 있는 EditMode test 4개가 모두 통과하고 원본/Git 무변경을 확인
+- acceptance 범위는 `APPROVED — SCRIPT COMPILATION + SELECTED EDITMODE TESTS ONLY`; PlayMode, Player Build, runtime, gameplay 및 release readiness는 `NOT_VERIFIED`
 
 ## Unity Agent Pipeline 0.4.0 - 2026-08-17
 

@@ -4,7 +4,7 @@ Unity EditMode Verification is an explicit-only pipeline component for selected 
 
 ## Current approval state
 
-The component remains `Unreleased`. A 2026-08-22 precursor run on signed Unity `6000.0.69f1` executed four meaningful tests and recorded 4 passed, 0 failed, and unchanged original/Git state. Production hardening was added afterward, so that run is historical evidence only and is not final acceptance for the current revision. The exact post-hardening implementation still requires a new acceptance run after its implementation commit and Windows CI pass.
+The component remains `Unreleased`, but implementation commit `56001b16e67a8f9543d2bf8eca90706d1faa3511` passed all four Windows workflows and a post-hardening signed Unity `6000.0.69f1` acceptance on 2026-08-22. The production run proved Baseline Script Compilation, selected-DLL preflight, and four passed EditMode cases with unchanged original/Git state. The approval is recorded as [SCRIPT COMPILATION + SELECTED EDITMODE TESTS ONLY](../validation/v0.1.0-editmode-real-unity-acceptance.md); it does not approve PlayMode, Player Build, runtime, gameplay, or release readiness.
 
 ## One-command flow
 
